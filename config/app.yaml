@@ -1,0 +1,101 @@
+# HomeInterface configuration.
+# Every key here has a built-in default - delete anything you don't need.
+
+display:
+  # Dev window size. The UI is resolution-independent; these are just the
+  # initial dimensions. Resize freely, or run --fullscreen on the real panel.
+  width: 1600
+  height: 900
+  resizable: true
+  fullscreen: false
+  vsync: true
+  fps: 60
+  # Bump toward 1.3-1.5 on a small touch panel to enlarge every element.
+  density: 1.0
+  cursor: true
+  title: HOME INTERFACE
+
+  # --- SPI panel (Raspberry Pi + PiTFT) -------------------------------
+  # See docs/raspberry-pi.md. driver: auto uses the framebuffer whenever one
+  # exists and no desktop session does, so the same command works on the Pi
+  # and on a development machine.
+  #   driver: auto | window | fbdev
+  #   fbdev: /dev/fb1        # omit to probe /dev/fb1 then /dev/fb0
+  #   touch: auto            # auto | none | /dev/input/eventN
+  # The digitiser's orientation is independent of the framebuffer's rotate=
+  # parameter. Generate this block with: python tools/touchcal.py
+  # touch_calibration:
+  #   swap_xy: true
+  #   invert_x: false
+  #   invert_y: true
+  #   x_range: [193, 3902]
+  #   y_range: [221, 3811]
+
+# Which page opens first: plan | overview | systems
+start_screen: plan
+
+# Path is relative to the project root.
+plan: config/floorplan.example.yaml
+
+backend:
+  # kind: mock | homeassistant
+  kind: mock
+  # mock only: randomly flips door/window sensors so alerts get exercised
+  chaos: true
+
+  # --- Home Assistant -------------------------------------------------
+  # Prefer the environment for secrets:  HA_URL / HA_TOKEN
+  # url: http://homeassistant.local:8123
+  # token: <long-lived access token>
+  # verify_ssl: true
+  # Optional allow-list of entity_id prefixes, keeps large installs light:
+  # entity_filter: [light., switch., sensor., climate., binary_sensor., cover.]
+
+  # Registry sync (homeassistant backend only). On every connect the app makes
+  # Home Assistant match the plan:
+  #   pavimento -> HA floor      zona -> HA area      cômodo -> HA label
+  # It is additive: cria o que falta, refila as entidades que a planta cita, e
+  # nunca apaga floor/area/label nem mexe em entidade fora da planta. Labels
+  # criados na mão sobrevivem - só os labels de cômodo da planta são trocados.
+  # A planta manda: se você mudar a area de um device pela UI do HA, o próximo
+  # boot desfaz. Ponha false para congelar o registry.
+  sync_registry: true
+
+# Airbus-style palette. Override any colour as #RRGGBB.
+theme:
+  # background: "#070A0E"
+  # normal:  "#00D678"   # green  - system normal
+  # caution: "#FFB020"   # amber  - abnormal
+  # warning: "#FF4238"   # red    - immediate action
+  # data:    "#5FC7F5"   # cyan   - units and setpoints
+  # target:  "#DB70FF"   # magenta- setpoints/targets
+  blink_hz: 1.0
+
+# Overview page contents. Omit a section to fall back to auto-discovery.
+overview:
+  gauges:
+    - entity_id: sensor.house_power
+      label: POWER
+      unit: W
+      max: 8000
+      caution_above: 5000
+      warning_above: 7000
+    - entity_id: sensor.outdoor_temperature
+      label: OUTSIDE
+      unit: "°C"
+      min: -5
+      max: 45
+      caution_above: 34
+  bars:
+    - entity_id: sensor.water_pressure
+      label: WATER PRESSURE
+      unit: bar
+      max: 6
+      caution_above: 4.5
+    - entity_id: sensor.outdoor_humidity
+      label: HUMIDITY
+      unit: "%"
+      max: 100
+  # quick_controls: [light.sala, light.cozinha, switch.bomba_jardim]
+  # lamps:
+  #   - {entity_id: binary_sensor.porta_frente, label: FRONT DOOR}

@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# runtime output
+screenshots/
+shots/
+
+# local overrides - keep tokens out of git.
+# config/floorplan.yaml is deliberately NOT ignored: the plan is meant to be
+# committed and shared.
+config/app.local.yaml
+.env

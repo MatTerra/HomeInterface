@@ -1,0 +1,264 @@
+# Planta da casa - traçada a partir da foto da planta baixa (prancha "PLANTA
+# BAIXA - ESC. 1:50") e depois corrigida cota a cota contra a casa real.
+#
+# ESTE ARQUIVO É A FONTE DA VERDADE, não a foto. Onde os dois divergem, a foto
+# está errada - a leitura dela tinha reflexo e vinco no papel.
+#
+# Cotas confirmadas:
+#   largura total ............ 16.85
+#   quarto 1 ................. 3.50
+#   banheiro 1 (suíte) ....... 1.80
+#   escritório ............... 3.50   (era "quarto 2")
+#   degrau do "S" ............ 0.70
+#   quarto 3 ................. 3.75
+#   closet do quarto 3 ....... 2.70   (era "quarto de empregada")
+#   closet da suíte .......... 2.50   (aparece como "biblioteca" na prancha)
+#   sala ..................... 4.65
+#   varanda .................. 4.65   (mesmo x da sala)
+#   banheiro 2 ............... 2.70 x 1.70
+#   despensa ................. 1.00
+#   corredor (prof.) ......... 1.15
+#   faixa de dormitórios ..... 4.15
+#   faixa social (prof.) ..... 4.00
+#   paredes internas ......... 0.15
+#
+# A faixa de dormitórios fecha sozinha na largura total, o que valida o
+# conjunto todo:
+#   0.15 + 3.50 + 0.15 + 1.80 + 0.15 + 8.10 + 0.15 + 2.70 + 0.15 = 16.85
+# onde 8.10 é escritório + parede + quarto 3 contando o degrau do "S" (confere
+# pelas duas metades: 3.50+0.15+4.45 em cima, 4.20+0.15+3.75 embaixo).
+#
+# AINDA ABERTO:
+#   1. Profundidade total. Hoje a casa vai de y=0 a 9.60 e a varanda até 13.60,
+#      mas isso saiu de somar as faixas, não de uma cota lida. Li algo como
+#      "15.60" na prancha e não fecha com nada.
+#   2. Cozinha: 6.25 no desenho contra 6.40 que você passou. A diferença é
+#      exatamente uma parede (0.15), então deve ser cota lida de face a face de
+#      um lado e de eixo a eixo do outro. Fiquei com 6.25 porque o fim dela em
+#      x=13.85 é confirmado por três lados: quarto 3, banheiro 2 e a própria
+#      cozinha terminam todos ali.
+#   3. Área de serviço: 1.55 no desenho contra 1.50 que você passou. É o que
+#      sobra depois de fixar a despensa em 1.00 terminando em x=16.70. Os 5 cm
+#      estão em uma dessas três.
+#   4. A zona "Setor Íntimo" hoje é só o escritório e o corredor - o nome
+#      sobrou de quando ela tinha os três quartos.
+#
+# Portas: todas 0.80 x 2.10, menos a do escritório (0.90) e a porta dupla
+# sala/varanda (1.60). O hall de entrada é ABERTO, sem porta para a rua: a casa
+# é elevada e ele é a escada de acesso, por isso conta como área externa.
+#
+# Sistema de coordenadas: metros, x para a direita, y para BAIXO, origem no
+# canto superior esquerdo da fachada.
+
+name: Casa
+units: m
+
+# Zonas: vários cômodos que viram um "super cômodo" com um menu de controle
+# único. É um agrupamento lógico - a geometria dos ambientes não muda, cada um
+# mantém sua área e seus dispositivos.
+#
+# Tocar num cômodo que pertence a uma zona abre o menu da ZONA. O botão
+# [ZONA | ROOM] no topo do inspetor desce para o cômodo individual.
+#
+# Referência de cômodo: use só o id quando ele for único na casa inteira, ou
+# "pavimento.comodo" quando houver ambiguidade. Uma zona PODE atravessar
+# pavimentos - útil pra "setor íntimo" numa casa de dois andares.
+#
+# Um cômodo só pode estar em uma zona (senão "qual menu manda nele" fica
+# indefinido, e o carregador recusa o arquivo).
+#
+# No Home Assistant a zona vira uma AREA, o cômodo vira um LABEL e o pavimento
+# vira um HA floor. Sobrescreva o nome com ha_area / ha_label / ha_floor quando
+# o nome bonito da tela não for o nome que você quer no HA.
+zones:
+  - id: suite
+    name: Suíte
+    short_name: SUI
+    rooms: [quarto1, banho1, closet1]
+
+  - id: quarto
+    name: Quarto
+    short_name: QRT
+    rooms: [quarto3, closet3]
+
+  - id: social
+    name: Área Social
+    short_name: SOC
+    rooms: [sala, copa, varanda]
+
+  # ? O nome "Setor Íntimo" sobrou de quando esta zona tinha os três quartos.
+  #   Hoje ela é só o escritório e o corredor - vale rebatizar.
+  - id: intimo
+    name: Setor Íntimo
+    short_name: INT
+    rooms: [escritorio, corredor]
+
+  - id: servicos
+    name: Serviços
+    short_name: SRV
+    rooms: [servico, despensa, banho2, hall]
+
+floors:
+  - id: terreo
+    name: Térreo
+    short_name: TER
+    level: 0
+
+    rooms:
+      # --- faixa superior: dormitórios -------------------------------
+      # Esta faixa fecha sozinha em 16.85, a largura total da casa:
+      #   0.15 + 3.50 + 0.15 + 1.80 + 0.15 + 8.10 + 0.15 + 2.70 + 0.15
+      # onde 8.10 é quarto 2 + parede + quarto 3 contando o degrau do "S".
+      #
+      # O trecho de circulação que encosta na fachada esquerda é parte do
+      # quarto 1, não um cômodo separado: é tudo o que fica atrás da porta da
+      # suíte. Por isso o quarto vira um "L" que passa por baixo do banheiro 1.
+      - id: quarto1
+        name: Quarto 1
+        polygon: [[0.15, 0.15], [3.65, 0.15], [3.65, 4.30], [5.60, 4.30], [5.60, 5.45], [0.15, 5.45]]
+      - {id: banho1,      name: Banheiro 1,          rect: [3.80,  0.15, 1.80, 4.15], kind: wet}
+      # Parede divisória em "S": o degrau é de 0.70 e cai na metade da
+      # profundidade (y = 2.225). Cada quarto mantém sua cota na metade em que
+      # é estreito - o escritório tem 3.50 em cima, o quarto 3 tem 3.75 embaixo
+      # leva o degrau na outra.
+      - id: escritorio
+        name: Escritório
+        polygon: [[5.75, 0.15], [9.25, 0.15], [9.25, 2.225], [9.95, 2.225], [9.95, 4.30], [5.75, 4.30]]
+      - id: quarto3
+        name: Quarto 3
+        polygon: [[9.40, 0.15], [13.85, 0.15], [13.85, 4.30], [10.10, 4.30], [10.10, 2.225], [9.40, 2.225]]
+      # O que a prancha traz como "quarto 4" / quarto de empregada é o closet
+      # do quarto 3.
+      - {id: closet3,     name: Closet Quarto 3,     rect: [14.00, 0.15, 2.70, 4.15], kind: storage}
+
+      # --- circulação -------------------------------------------------
+      # Corredor comum: da porta da suíte (x=5.75) até a porta do banheiro 2
+      # (x=11.075), que fica no fim dele. A porta do quarto 3 é a última do
+      # corredor, colada no "S".
+      - {id: corredor,    name: Corredor,            rect: [5.75,  4.30, 5.25, 1.15]}
+      # Banheiro 2: 2.70 x 1.70. Começa na faixa do corredor e desce, comendo
+      # o canto da copa/cozinha. Termina em x=13.85, alinhado com o fim do
+      # quarto 3 e da cozinha.
+      - {id: banho2,      name: Banheiro 2,          rect: [11.15, 4.30, 2.70, 1.70], kind: wet}
+
+      # --- faixa inferior: social e serviço ---------------------------
+      # Closet da suíte 1 - na prancha aparece como "biblioteca", mas hoje é o
+      # closet do quarto 1. Parede superior alinhada com a da sala (y=5.45),
+      # por isso não encosta no quarto 1: abre pelo quarto.
+      - {id: closet1,     name: Closet Suíte 1,      rect: [0.15,  5.45, 2.50, 4.00], kind: storage}
+      # Sala e varanda têm o mesmo x: 4.65, encostando na copa/cozinha.
+      - {id: sala,        name: Sala,                rect: [2.80,  5.45, 4.65, 4.00]}
+      # Copa e cozinha são um cômodo só - não há parede entre elas. Vai de 7.60
+      # (encostando na sala) a 13.85 (alinhada com o fim do quarto 3 e do
+      # banheiro 2). O entalhe no topo é o pedaço que o banheiro 2 come.
+      # ? Dá 6.25, e você passou 6.40 - diferença de exatamente uma parede.
+      #   Ver item 12.
+      - id: copa
+        name: Copa e Cozinha
+        polygon: [[7.60, 5.45], [11.00, 5.45], [11.00, 6.15], [13.85, 6.15], [13.85, 9.45], [7.60, 9.45]]
+      # Sobe até y=4.30 e encosta no closet 3: não há corredor atrás do
+      # banheiro 2. À direita encosta na despensa e no hall.
+      # ? A largura virou 1.55 e não 1.50: com a despensa terminando em 16.70
+      #   e 1.00 de largura, é o que fecha com uma parede de 0.15 no meio.
+      #   Os 5 cm de sobra estão em alguma das três cotas.
+      - {id: servico,     name: Área de Serviço,     rect: [14.00, 4.30, 1.55, 5.15], kind: service}
+      # 1.00 no eixo x, terminando alinhada com o fim do closet 3 (x=16.70).
+      # Mesma faixa de y do banheiro 2.
+      - {id: despensa,    name: Despensa,            rect: [15.70, 4.30, 1.00, 1.70], kind: storage}
+      # Hall de entrada: a casa é elevada, então ele é a escada que sobe até
+      # ela. ABERTO - não tem porta para a rua, e é por isso que é área externa
+      # (dentro da pegada do prédio, fora do envelope fechado). A única porta
+      # dele é a que dá na área de serviço, e essa é uma porta externa.
+      - {id: hall,        name: Hall,                rect: [15.70, 6.15, 1.00, 3.30], kind: outdoor}
+
+      # --- externo ----------------------------------------------------
+      # Varanda tem o mesmo tamanho da sala e alinha com ela nos dois lados.
+      - {id: varanda,     name: Varanda,             rect: [2.80,  9.60, 4.65, 4.00], kind: outdoor}
+
+    # Sem bloco 'walls'. As paredes são derivadas dos próprios cômodos: cada
+    # um desenha o contorno na espessura cheia, centrado na sua borda, então
+    # dois cômodos separados por 0.15 cobrem metade da fresta cada um.
+    #
+    # Manter uma lista à mão em paralelo dava dois problemas ao mesmo tempo:
+    # divisória esquecida virava buraco (quarto 1 / banheiro 1 ficou assim), e
+    # divisória lembrada virava parede DUPLA, porque o segmento escrito ficava
+    # deslocado da borda do cômodo - o perímetro estava em x=0.00 enquanto os
+    # cômodos começam em 0.15, e as duas faixas apareciam lado a lado.
+    #
+    # O bloco continua suportado pelo carregador, para parede que não é borda
+    # de cômodo nenhum (muro de jardim, por exemplo). Esta casa não tem nenhuma.
+
+    openings:
+      # portas dos quartos, todas 0.80 x 2.10
+      # Banheiro da suíte: abre para a faixa de passagem do quarto 1 - a
+      # "perna" do L, do lado do corredor - e não para o miolo do quarto.
+      - {kind: door, at: [4.70,  4.30], width: 0.80, angle: 0}
+      # Closet da suíte: abre pelo quarto 1, na parede y=5.45.
+      - {kind: door, at: [1.40,  5.45], width: 0.80, angle: 0, swing: -1}
+      # porta da suíte: separa o quarto 1 do corredor comum
+      - {kind: door, at: [5.675, 4.875], width: 0.80, angle: 90}
+      # A 2.60 do começo do escritório, vão de 0.90: vai de 8.35 a 9.25, e o
+      # 9.25 é justamente onde o "S" começa.
+      - {kind: door, at: [8.80,  4.30], width: 0.90, angle: 0}
+      # Última porta do corredor, colada no "S" (quarto 3 começa em 10.10).
+      - {kind: door, at: [10.50, 4.30], width: 0.80, angle: 0}
+      # Closet do quarto 3: abre do quarto, na divisa vertical x=13.925.
+      - {kind: door, at: [13.925, 3.85], width: 0.80, angle: 90}
+      # Banheiro 2 fecha o corredor: sua porta é a divisa vertical x=11.075.
+      - {kind: door, at: [11.075, 4.875], width: 0.80, angle: 90}
+      # sala / copa e cozinha
+      - {kind: door, at: [6.50,  5.45], width: 0.80, angle: 0}
+      - {kind: door, at: [8.80,  5.45], width: 0.80, angle: 0}
+      # cozinha <-> área de serviço, encostada na parede do banheiro 2
+      - {kind: door, at: [13.925, 6.55], width: 0.80, angle: 90}
+      # Despensa e hall abrem os dois para a área de serviço, na mesma divisa
+      # vertical x=15.625: a despensa no topo dela, colada no closet do quarto
+      # 3, e o hall logo abaixo da despensa.
+      - {kind: door, at: [15.625, 4.70], width: 0.80, angle: 90}
+      - {kind: door, at: [15.625, 6.55], width: 0.80, angle: 90}
+      # janelas da fachada esquerda (verticais, por isso angle: 90)
+      - {kind: window, at: [0.00,  2.20], width: 2.50, angle: 90}
+      - {kind: window, at: [0.00,  7.45], width: 2.50, angle: 90}
+      # janelas da fachada frontal (faixa de dormitórios)
+      - {kind: window, at: [1.90,  0.00], width: 2.00, angle: 0}
+      - {kind: window, at: [7.50,  0.00], width: 2.00, angle: 0}
+      - {kind: window, at: [11.60, 0.00], width: 2.00, angle: 0}
+      - {kind: window, at: [15.35, 0.00], width: 1.00, angle: 0}
+      # janelas dos fundos (faixa social)
+      # sala <-> varanda: porta dupla, vão de 1.60
+      - {kind: door, at: [5.10,  9.60], width: 1.60, angle: 0}
+      # As duas saídas laterais da varanda, uma de cada lado e as duas
+      # encostadas na casa. São portas EXTERNAS: do lado de fora não há cômodo.
+      - {kind: door, at: [2.65,  10.10], width: 0.80, angle: 90}
+      - {kind: door, at: [7.60,  10.10], width: 0.80, angle: 90}
+      - {kind: window, at: [9.50,  9.60], width: 2.00, angle: 0}
+      - {kind: window, at: [12.00, 9.60], width: 1.80, angle: 0}
+
+    devices:
+      # Um ponto de luz por ambiente como ponto de partida. Troque os
+      # entity_id pelos reais do Home Assistant quando existirem.
+      - {entity_id: light.quarto1,      at: [1.90,  1.20], label: Luz Quarto 1}
+      - {entity_id: light.banho1,       at: [4.70,  1.20], label: Luz Banheiro 1}
+      - {entity_id: light.escritorio,   at: [7.50,  1.20], label: Luz Escritório}
+      - {entity_id: light.quarto3,      at: [11.60, 1.20], label: Luz Quarto 3}
+      - {entity_id: light.closet3,      at: [15.35, 1.20], label: Luz Closet Quarto 3}
+      - {entity_id: light.corredor,     at: [8.40,  4.87], label: Luz Corredor}
+      - {entity_id: light.closet1,      at: [1.40,  6.95], label: Luz Closet Suíte 1}
+      - {entity_id: light.sala,         at: [5.10,  7.45], label: Luz Sala}
+      - {entity_id: light.copa,         at: [9.30,  7.45], label: Luz Copa}
+      - {entity_id: light.cozinha,      at: [12.00, 8.45], label: Luz Cozinha}
+      - {entity_id: light.banho2,       at: [12.50, 5.15], label: Luz Banheiro 2}
+      - {entity_id: light.servico,      at: [14.75, 7.45], label: Luz Área Serviço}
+      - {entity_id: light.despensa,     at: [16.20, 5.15], label: Luz Despensa}
+      - {entity_id: light.hall,         at: [16.20, 7.80], label: Luz Hall}
+      - {entity_id: light.varanda,      at: [5.10,  11.05], label: Luz Varanda}
+
+      # climatização
+      - {entity_id: climate.quarto1,    at: [0.60,  0.60], label: Ar Quarto 1}
+      - {entity_id: climate.escritorio, at: [6.20,  0.60], label: Ar Escritório}
+      - {entity_id: climate.quarto3,    at: [10.00, 0.60], label: Ar Quarto 3}
+      - {entity_id: climate.sala,       at: [3.25,  5.90], label: Ar Sala}
+
+      # aberturas e sensores
+      - {entity_id: binary_sensor.porta_servico, at: [15.40, 6.55], label: Porta Serviço}
+      - {entity_id: sensor.quadro_geral,         at: [14.75, 5.95], label: Quadro Geral}

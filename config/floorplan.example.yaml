@@ -1,0 +1,90 @@
+# Example floor plan - replace with your own house.
+#
+# Coordinates are in metres, x to the right and y DOWNWARD (same as looking
+# at the printed plan). Rectangular rooms can use the `rect: [x, y, w, h]`
+# shorthand instead of a polygon.
+#
+# Levels: 0 = ground, 1 = first floor up, -1 = basement. Any number of floors.
+# All floors share one coordinate system, so they stay aligned when you flip
+# between them - draw them as if stacked.
+
+name: Casa Exemplo
+units: m
+
+floors:
+  # =====================================================================
+  - id: terreo
+    name: Térreo
+    short_name: TER
+    level: 0
+
+    rooms:
+      - {id: sala,      name: Sala,           rect: [0.0, 0.0, 5.0, 4.0]}
+      - {id: cozinha,   name: Cozinha,        rect: [5.0, 0.0, 3.5, 4.0]}
+      - {id: lavabo,    name: Lavabo,         rect: [8.5, 0.0, 1.5, 2.0], kind: wet}
+      - {id: servico,   name: Área de Serviço, rect: [8.5, 2.0, 1.5, 2.0], kind: service}
+      - {id: hall,      name: Hall,           rect: [0.0, 4.0, 2.5, 2.5]}
+      - {id: garagem,   name: Garagem,        rect: [2.5, 4.0, 5.0, 2.5], kind: garage}
+      - {id: varanda,   name: Varanda,        rect: [7.5, 4.0, 2.5, 2.5], kind: outdoor}
+
+    walls:
+      - [[0.0, 0.0], [10.0, 0.0]]
+      - [[10.0, 0.0], [10.0, 6.5]]
+      - [[10.0, 6.5], [0.0, 6.5]]
+      - [[0.0, 6.5], [0.0, 0.0]]
+      - [[5.0, 0.0], [5.0, 4.0]]
+      - [[0.0, 4.0], [10.0, 4.0]]
+
+    openings:
+      - {kind: door,   at: [1.2, 6.5], width: 1.0, angle: 0}
+      - {kind: door,   at: [5.0, 2.0], width: 0.9, angle: 90}
+      - {kind: window, at: [2.5, 0.0], width: 2.0, angle: 0}
+      - {kind: window, at: [6.5, 0.0], width: 1.4, angle: 0}
+
+    devices:
+      - {entity_id: light.sala,           at: [2.5, 0.8], label: Luz Sala}
+      - {entity_id: light.cozinha,        at: [6.7, 0.9], label: Luz Cozinha}
+      - {entity_id: light.varanda,        at: [8.7, 4.6], label: Luz Varanda}
+      - {entity_id: switch.bomba_jardim,  at: [9.25, 3.4], label: Bomba Jardim}
+      - {entity_id: climate.sala,         at: [4.2, 0.6], label: Ar Sala}
+      - {entity_id: cover.portao,         at: [5.0, 6.4], label: Portão}
+      - {entity_id: binary_sensor.porta_frente, at: [1.2, 6.3], label: Porta Frente}
+      - {entity_id: sensor.house_power,   at: [9.25, 0.7], label: Quadro}
+
+  # =====================================================================
+  - id: superior
+    name: Pavimento Superior
+    short_name: SUP
+    level: 1
+
+    rooms:
+      - {id: suite,      name: Suíte,        rect: [0.0, 0.0, 4.5, 4.0]}
+      - {id: banho_suite, name: Banho Suíte, rect: [4.5, 0.0, 2.0, 2.0], kind: wet}
+      - {id: quarto2,    name: Quarto 2,     rect: [6.5, 0.0, 3.5, 4.0]}
+      - {id: corredor,   name: Corredor,     rect: [4.5, 2.0, 2.0, 4.5]}
+      - {id: quarto3,    name: Quarto 3,     rect: [0.0, 4.0, 4.5, 2.5]}
+      - {id: banho,      name: Banho Social, rect: [6.5, 4.0, 3.5, 2.5], kind: wet}
+
+    walls:
+      - [[0.0, 0.0], [10.0, 0.0]]
+      - [[10.0, 0.0], [10.0, 6.5]]
+      - [[10.0, 6.5], [0.0, 6.5]]
+      - [[0.0, 6.5], [0.0, 0.0]]
+      - [[4.5, 0.0], [4.5, 6.5]]
+      - [[6.5, 0.0], [6.5, 6.5]]
+
+    openings:
+      - {kind: door,   at: [4.5, 3.0], width: 0.8, angle: 90}
+      - {kind: door,   at: [6.5, 3.0], width: 0.8, angle: 90, swing: -1}
+      - {kind: window, at: [2.2, 0.0], width: 1.6, angle: 0}
+      - {kind: window, at: [8.2, 0.0], width: 1.6, angle: 0}
+
+    devices:
+      - {entity_id: light.suite,     at: [2.2, 0.9], label: Luz Suíte}
+      - {entity_id: light.quarto2,   at: [8.2, 0.9], label: Luz Quarto 2}
+      - {entity_id: light.quarto3,   at: [2.2, 4.6], label: Luz Quarto 3}
+      - {entity_id: light.corredor,  at: [5.5, 2.6], label: Luz Corredor}
+      - {entity_id: climate.suite,   at: [0.6, 0.6], label: Ar Suíte}
+      - {entity_id: cover.persiana_suite, at: [2.2, 0.2], label: Persiana Suíte}
+      - {entity_id: sensor.temperatura_suite, at: [3.9, 3.4], label: Temp Suíte}
+      - {entity_id: binary_sensor.janela_quarto2, at: [8.2, 0.2], label: Janela Q2}

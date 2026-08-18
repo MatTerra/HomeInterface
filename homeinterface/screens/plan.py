@@ -9,6 +9,12 @@ fit a 480x320 panel leaves neither the names nor the device markers legible:
 * **focus** - one room, or one zone, drawn alone and scaled to fill the plan
   rectangle, with its devices and the inspector beside it.
 
+The overview has two presentations, switched by the GRID/PLAN button: the
+drawing, and a grid of one card per place.  True to scale, a bathroom or a
+corridor is a sliver you have to aim at; the grid gives every place the same
+comfortable target and the same room for its name, at the cost of the spatial
+sense the drawing carries.  Both stages lead into the same focus view.
+
 Layout adapts to the panel's aspect: on a 21:9 wall display the inspector
 sits beside the plan; on anything squarer it drops underneath.  The floor
 selector is a vertical elevation strip - lowest storey at the bottom, the way
@@ -25,7 +31,7 @@ from ..floorplan.model import BBox, Device, Floor, Room
 from ..fonts import blit_text, truncate
 from ..scaling import Box
 from ..theme import mix
-from ..ui.base import UIContext, Widget
+from ..ui.base import Pressable, UIContext, Widget
 from ..ui.controls import Button, Slider
 from ..ui.indicators import EntityTile, Panel
 from .base import Screen
@@ -33,6 +39,15 @@ from .base import Screen
 ZOOM_STEP = 1.18
 MIN_ZOOM = 0.5
 MAX_ZOOM = 6.0
+
+#: smallest card the grid view will lay out, in design units.  Width is what a
+#: room name needs at body size; height is a touch target plus its sub-line.
+CARD_MIN_W = 104.0
+CARD_MIN_H = 52.0
+#: past four columns the cards stop being bigger than the rooms they replace
+CARD_MAX_COLS = 4
+#: cards read as labels, so they want to be wider than tall
+CARD_ASPECT = 2.0
 
 
 class FloorStrip(Widget):
@@ -87,6 +102,68 @@ class FloorStrip(Widget):
                           anchor="center", mono=True)
 
 
+class PlaceCard(Pressable):
+    """One place in the grid view: a zone, or a room controlled on its own.
+
+    The card carries what the drawing carries in overview - the name and the
+    fact that something is on in there - and nothing else: it is a way in, not
+    a control.  Acting on the place is still the focus stage's job.
+    """
+
+    def __init__(self, name: str, sub: str, room_id: str, entity_ids: list[str],
+                 on_press, *, is_zone: bool = False):
+        super().__init__(lambda: on_press(room_id))
+        self.name = name
+        self.sub = sub
+        self.room_id = room_id
+        self.entity_ids = entity_ids
+        self.is_zone = is_zone
+
+    def draw(self, surface: pygame.Surface, ctx: UIContext) -> None:
+        t = ctx.theme
+        on, total = ctx.backend.group_state(self.entity_ids) if self.entity_ids else (0, 0)
+        accent = t.status_color("on" if on else ("off" if total else "inop"))
+        hovered = self.rect.collidepoint(ctx.pointer)
+        cut = ctx.u(t.chamfer * 0.8)
+        fill = mix(t.panel, t.panel_alt, 1.0 if (hovered or self.is_pressed) else 0.35)
+        if on:
+            fill = mix(fill, accent, 0.18)
+        vd.chamfer_rect(surface, self.rect, fill=fill, cut=cut)
+        vd.chamfer_rect(surface, self.rect,
+                        outline=accent if on else (t.rule_bright if hovered else t.rule),
+                        width=ctx.px(t.stroke), cut=cut)
+        pygame.draw.rect(surface, accent,
+                         pygame.Rect(self.rect.left, self.rect.top, ctx.px(3), self.rect.height))
+
+        pad = ctx.u(8)
+        inner = self.rect.width - pad * 2 - ctx.u(4)
+        # the name is the card; type is capped against the card's own height so
+        # a dense page does not print the name over its sub-line
+        name_px = max(8, min(ctx.font_px(t.size_body), round(self.rect.height * 0.34)))
+        sub_px = max(8, min(ctx.font_px(t.size_micro), round(self.rect.height * 0.22)))
+        two_lines = self.rect.height > name_px + sub_px * 2.2
+        blit_text(surface, ctx.book,
+                  truncate(ctx.book, self.name.upper(), name_px, inner), name_px, t.text,
+                  (self.rect.left + pad + ctx.u(4),
+                   self.rect.top + pad if two_lines else self.rect.centery),
+                  anchor="topleft" if two_lines else "midleft")
+        if not two_lines:
+            return
+        state = f"{on}/{total} ON" if total else "NO DEVICES"
+        blit_text(surface, ctx.book, truncate(ctx.book, state, sub_px, inner), sub_px,
+                  accent if total else t.inop,
+                  (self.rect.left + pad + ctx.u(4), self.rect.bottom - pad),
+                  anchor="bottomleft", mono=True)
+        # the area only earns its space once the state line is not alone
+        if self.rect.width > ctx.u(CARD_MIN_W) * 1.15:
+            blit_text(surface, ctx.book, truncate(ctx.book, self.sub, sub_px, inner * 0.5), sub_px,
+                      t.inop, (self.rect.right - pad, self.rect.bottom - pad),
+                      anchor="bottomright", mono=True)
+        if self.is_zone:
+            blit_text(surface, ctx.book, "ZONE", sub_px, t.data,
+                      (self.rect.right - pad, self.rect.top + pad), anchor="topright", mono=True)
+
+
 class PlanScreen(Screen):
     key = "plan"
     title = "PLAN"
@@ -105,6 +182,11 @@ class PlanScreen(Screen):
         self.selected_zone: str | None = None
         #: stage: False = whole storey, names only; True = one room/zone alone
         self.focused = False
+        #: overview presentation: False = the drawing, True = a grid of cards
+        self.grid_mode = False
+        self._cards: list[PlaceCard] = []
+        self._grid_page = 0
+        self._grid_pages = 1
         #: when the tapped room belongs to a zone, control the zone by default -
         #: the grouping exists precisely because that is the intended unit
         self.prefer_zone = True
@@ -124,6 +206,10 @@ class PlanScreen(Screen):
         self.btn_zoom_out = Button("-", lambda: self._zoom(1 / ZOOM_STEP), compact=True)
         self.btn_reset = Button("FIT", self._reset_view, compact=True)
         self.btn_back = Button("< PLAN", self._exit_focus, compact=True)
+        # labelled with what a tap gives you, not with where you are
+        self.btn_view = Button("GRID", self._toggle_view, compact=True)
+        self.btn_page_prev = Button("<", lambda: self._turn_page(-1), compact=True)
+        self.btn_page_next = Button(">", lambda: self._turn_page(1), compact=True)
 
     # -- state -----------------------------------------------------------
     @property
@@ -187,6 +273,7 @@ class PlanScreen(Screen):
 
     def _select_floor(self, floor_id: str) -> None:
         self.floor_id = floor_id
+        self._grid_page = 0  # another storey, another set of places
         self._exit_focus()
 
     def _enter_focus(self, room_id: str) -> None:
@@ -212,6 +299,19 @@ class PlanScreen(Screen):
         self._reset_view()
         self._inspector_key = None
         self.invalidate()
+
+    def _toggle_view(self) -> None:
+        self.grid_mode = not self.grid_mode
+        self._grid_page = 0
+        self.invalidate()  # the plan controls exist in one presentation only
+
+    def _turn_page(self, step: int) -> None:
+        self._grid_page = max(0, min(self._grid_pages - 1, self._grid_page + step))
+        self.invalidate()
+
+    @property
+    def showing_grid(self) -> bool:
+        return self.grid_mode and not self.focused
 
     def _zoom(self, factor: float) -> None:
         self.zoom = max(MIN_ZOOM, min(MAX_ZOOM, self.zoom * factor))
@@ -262,12 +362,123 @@ class PlanScreen(Screen):
         # and the bottom right to the zoom cluster, and a mis-tap there would
         # throw away the selection instead of nudging the view.
         back_w = round(btn * 2.0)
-        self.btn_back.layout(pygame.Rect(
+        corner = pygame.Rect(
             self._plan_rect.right - ctx.u(t.pad) - back_w,
             self._plan_rect.top + ctx.u(t.pad),
             back_w, round(btn * 0.8),
-        ))
+        )
+        self.btn_back.layout(corner)
+        # BACK and GRID never coexist - one belongs to focus, the other to
+        # overview - so they share the corner rather than crowd it.
+        self.btn_view.layout(corner)
+        self.btn_view.label = "PLAN" if self.grid_mode else "GRID"
+        self.btn_view.active = self.grid_mode
+
+        # zooming and fitting are things you do to a drawing; the grid keeps
+        # only the page turners, in the same corner the zoom cluster sits in
+        for widget in (self.btn_zoom_in, self.btn_zoom_out, self.btn_reset):
+            widget.visible = not self.showing_grid
+        if self.showing_grid:
+            self._layout_grid(ctx, corner.bottom + gap, controls.rect)
+        else:
+            self._cards = []
+            self.btn_page_prev.visible = self.btn_page_next.visible = False
         self._inspector_key = None
+
+    # -- grid view -------------------------------------------------------
+    def _grid_places(self) -> list[tuple[str, str, str, list[str], bool]]:
+        """(name, sub, room_id, entity_ids, is_zone) per place on this floor.
+
+        One card per *unit of control*: a zone counts once, however many rooms
+        it is made of, exactly as the overview drawing names it once.  Order
+        follows the plan file so the grid and the drawing list the house in the
+        same sequence.
+        """
+        floor = self.floor
+        if floor is None:
+            return []
+        units = self.plan.units
+        out: list[tuple[str, str, str, list[str], bool]] = []
+        seen_zones: set[str] = set()
+        for room in floor.rooms:
+            zone = self.plan.zone_of(self.floor_id, room.id)
+            if zone is None:
+                devices = floor.devices_in(room.id)
+                out.append((room.name, f"{room.area:.0f} {units}²", room.id,
+                            [d.entity_id for d in devices], False))
+            elif zone.id not in seen_zones:
+                seen_zones.add(zone.id)
+                out.append((zone.name, f"{self.plan.zone_area(zone):.0f} {units}²", room.id,
+                            [d.entity_id for d in self.plan.zone_devices(zone)], True))
+        return out
+
+    def _grid_shape(self, ctx: UIContext, rect: pygame.Rect, gap: float,
+                    count: int) -> tuple[int, int]:
+        """Columns and rows of cards that fit in ``rect``, capped by ``count``.
+
+        Cards never go below the minimum touch size, so a page holds what it
+        holds and the rest goes onto the next one.  Among the shapes that do
+        hold everything, the one whose cells come closest to CARD_ASPECT wins:
+        seven places on a wall panel want 4x2, not 2x4 of billboards.
+        """
+        cols_max = max(1, min(CARD_MAX_COLS,
+                              int((rect.width + gap) // (ctx.u(CARD_MIN_W) + gap))))
+        rows_max = max(1, int((rect.height + gap) // (ctx.u(CARD_MIN_H) + gap)))
+        best: tuple[float, int, int] | None = None
+        for cols in range(1, cols_max + 1):
+            rows = max(1, -(-count // cols))
+            if rows > rows_max:
+                continue
+            cell_w = (rect.width - gap * (cols - 1)) / cols
+            cell_h = (rect.height - gap * (rows - 1)) / rows
+            score = abs(cell_w / cell_h - CARD_ASPECT) if cell_h else 1e9
+            if best is None or score < best[0]:
+                best = (score, cols, rows)
+        if best is None:  # nothing fits on one page: fill it and page the rest
+            return cols_max, rows_max
+        return best[1], best[2]
+
+    def _layout_grid(self, ctx: UIContext, top: float, pager_rect: pygame.Rect) -> None:
+        t = ctx.theme
+        gap = ctx.u(t.gap) * 0.6
+        pad = ctx.u(t.pad)
+        area = Box(pygame.Rect(
+            self._plan_rect.left + pad, round(top),
+            self._plan_rect.width - pad * 2,
+            round(self._plan_rect.bottom - pad - top),
+        ))
+        places = self._grid_places()
+        self._cards = []
+        if not places or area.rect.width <= 0 or area.rect.height <= 0:
+            self._grid_pages = 1
+            self.btn_page_prev.visible = self.btn_page_next.visible = False
+            return
+
+        cols, rows = self._grid_shape(ctx, area.rect, gap, len(places))
+        paged = cols * rows < len(places)
+        if paged:
+            # the pager takes the strip the zoom cluster would have used, so
+            # the cells have to be measured again against what is left
+            area = area.inset(bottom=pager_rect.height + gap)
+            cols, rows = self._grid_shape(ctx, area.rect, gap, len(places))
+            half = (pager_rect.width - gap) / 2
+            self.btn_page_prev.layout(pygame.Rect(round(pager_rect.left), pager_rect.top,
+                                                  round(half), pager_rect.height))
+            self.btn_page_next.layout(pygame.Rect(round(pager_rect.right - half), pager_rect.top,
+                                                  round(half), pager_rect.height))
+        per_page = cols * rows
+        self._grid_pages = max(1, -(-len(places) // per_page))
+        self._grid_page = min(self._grid_page, self._grid_pages - 1)
+        self.btn_page_prev.enabled = self._grid_page > 0
+        self.btn_page_next.enabled = self._grid_page < self._grid_pages - 1
+        self.btn_page_prev.visible = self.btn_page_next.visible = paged
+
+        page = places[self._grid_page * per_page:][:per_page]
+        cells = area.grid(cols, rows, gap=gap)
+        for (name, sub, room_id, entity_ids, is_zone), cell in zip(page, cells):
+            card = PlaceCard(name, sub, room_id, entity_ids, self._enter_focus, is_zone=is_zone)
+            card.layout(cell.rect)
+            self._cards.append(card)
 
     def _make_view(self, ctx: UIContext) -> PlanView:
         return PlanView(
@@ -472,11 +683,14 @@ class PlanScreen(Screen):
 
     # -- events ----------------------------------------------------------
     def handle(self, event: pygame.event.Event, ctx: UIContext) -> bool:
-        controls = [self.btn_zoom_in, self.btn_zoom_out, self.btn_reset, self.strip]
-        if self.focused:
-            controls.append(self.btn_back)
+        controls: list[Widget] = [self.strip]
+        if self.showing_grid:
+            controls += [self.btn_page_prev, self.btn_page_next, *self._cards]
+        else:
+            controls += [self.btn_zoom_in, self.btn_zoom_out, self.btn_reset]
+        controls.append(self.btn_back if self.focused else self.btn_view)
         for widget in controls:
-            if widget.handle(event, ctx):
+            if widget.visible and widget.enabled and widget.handle(event, ctx):
                 return True
         if self.focused:
             for widget in self._inspector:
@@ -485,6 +699,9 @@ class PlanScreen(Screen):
 
         floor = self.floor
         view = self._view
+        if self.showing_grid:
+            # there is no drawing to pan, zoom or tap: the cards are the page
+            return self._handle_keys(event)
         if floor is None or view is None:
             return False
 
@@ -541,20 +758,27 @@ class PlanScreen(Screen):
             self._inspector_key = None
             return True
 
-        if event.type == pygame.KEYDOWN:
-            # not ESC: the shell claims that one for quit
-            if event.key == pygame.K_BACKSPACE and self.focused:
-                self._exit_focus()
-                return True
-            if event.key in (pygame.K_PAGEUP, pygame.K_PAGEDOWN):
-                step = 1 if event.key == pygame.K_PAGEUP else -1
-                index = self.plan.index_of(self.floor_id) + step
-                if 0 <= index < len(self.plan.floors):
-                    self._select_floor(self.plan.floors[index].id)
-                return True
-            if event.key == pygame.K_f:
-                self._reset_view()
-                return True
+        return self._handle_keys(event)
+
+    def _handle_keys(self, event: pygame.event.Event) -> bool:
+        if event.type != pygame.KEYDOWN:
+            return False
+        # not ESC: the shell claims that one for quit
+        if event.key == pygame.K_BACKSPACE and self.focused:
+            self._exit_focus()
+            return True
+        if event.key in (pygame.K_PAGEUP, pygame.K_PAGEDOWN):
+            step = 1 if event.key == pygame.K_PAGEUP else -1
+            index = self.plan.index_of(self.floor_id) + step
+            if 0 <= index < len(self.plan.floors):
+                self._select_floor(self.plan.floors[index].id)
+            return True
+        if event.key == pygame.K_g and not self.focused:
+            self._toggle_view()
+            return True
+        if event.key == pygame.K_f:
+            self._reset_view()
+            return True
         return False
 
     # -- drawing ---------------------------------------------------------
@@ -568,7 +792,11 @@ class PlanScreen(Screen):
         vd.chamfer_rect(surface, self._plan_rect, fill=t.background, cut=cut)
         vd.chamfer_rect(surface, self._plan_rect, outline=t.rule, width=ctx.px(t.stroke), cut=cut)
 
-        if floor is None:
+        if floor is not None and self.showing_grid:
+            for card in self._cards:
+                card.draw(surface, ctx)
+            self._draw_caption(surface, ctx, floor)
+        elif floor is None:
             blit_text(surface, ctx.book, "NO FLOOR PLAN LOADED", ctx.font_px(t.size_large), t.caution,
                       self._plan_rect.center, anchor="center")
             blit_text(surface, ctx.book, "SET plan: <file> IN config/app.yaml", ctx.font_px(t.size_small),
@@ -604,11 +832,16 @@ class PlanScreen(Screen):
             self._draw_caption(surface, ctx, floor)
 
         self.strip.draw(surface, ctx)
-        for widget in (self.btn_zoom_in, self.btn_zoom_out, self.btn_reset):
-            widget.draw(surface, ctx)
+        for widget in (self.btn_zoom_in, self.btn_zoom_out, self.btn_reset,
+                       self.btn_page_prev, self.btn_page_next):
+            if widget.visible:
+                widget.draw(surface, ctx)
         if self.focused:
             self.btn_back.draw(surface, ctx)
             self._draw_inspector(surface, ctx, floor)
+        else:
+            self.btn_view.draw(surface, ctx)
+
 
     def _hint_width(self, ctx: UIContext) -> float:
         return ctx.book.font(ctx.font_px(ctx.theme.size_micro), mono=True).size(self.HINT)[0]
@@ -630,22 +863,28 @@ class PlanScreen(Screen):
         else:
             parts = [floor.name.upper(), f"{len(floor.rooms)} ROOMS",
                      f"{len(self.plan.zones_on(self.floor_id))} ZONES"]
+            if self.showing_grid and self._grid_pages > 1:
+                parts.append(f"PAGE {self._grid_page + 1}/{self._grid_pages}")
         left = self._plan_rect.left + ctx.u(t.pad)
-        # the caption shares the top edge with the back button (focus) or the
-        # tap hint (overview), so it yields the space rather than run under them
-        limit = (self.btn_back.rect.left if self.focused
-                 else self._plan_rect.right - ctx.u(t.pad) * 2 - self._hint_width(ctx))
+        pad = ctx.u(t.pad)
+        # the caption shares the top edge with a corner button - BACK in focus,
+        # GRID/PLAN in overview - and with the tap hint, so it yields the space
+        # rather than run under them
+        button = self.btn_back if self.focused else self.btn_view
+        hint_w = 0.0 if self.focused else self._hint_width(ctx) + pad
+        limit = button.rect.left - pad
+        # on the 480x320 panel the hint does not fit beside the caption; the
+        # caption is the one that has to be there
+        show_hint = not self.focused and limit - hint_w - left > ctx.u(60)
         size = ctx.font_px(t.size_micro)
         blit_text(surface, ctx.book,
                   truncate(ctx.book, "  ·  ".join(p for p in parts if p), size,
-                           max(limit - left - ctx.u(t.pad), 0), mono=True),
+                           max(limit - (hint_w if show_hint else 0.0) - left, 0), mono=True),
                   size, t.inop, (left, self._plan_rect.top + ctx.u(t.pad)),
                   anchor="topleft", mono=True)
-        if not self.focused:
-            # top right: the bottom edge is spoken for by the scale bar and the
-            # zoom cluster, and the middle is where the drawing goes
-            blit_text(surface, ctx.book, self.HINT, ctx.font_px(t.size_micro), t.inop,
-                      (self._plan_rect.right - ctx.u(t.pad), self._plan_rect.top + ctx.u(t.pad)),
+        if show_hint:
+            blit_text(surface, ctx.book, self.HINT, size, t.inop,
+                      (limit, self._plan_rect.top + ctx.u(t.pad)),
                       anchor="topright", mono=True)
 
     def _draw_inspector(self, surface: pygame.Surface, ctx: UIContext, floor: Floor | None) -> None:

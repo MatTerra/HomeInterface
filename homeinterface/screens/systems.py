@@ -1,10 +1,17 @@
 """Systems screen - every entity the backend exposes, plus link diagnostics.
 
-This is the maintenance page: a scrollable, domain-filtered list of raw
-entities.  Useful for finding the entity ids to paste into a floor plan.
+This is the maintenance page: a paged, domain-filtered list of raw entities.
+Useful for finding the entity ids to paste into a floor plan.
+
+The list moves by whole pages, on buttons.  The wheel still scrolls it freely
+for mouse users, but the wheel is not available on the panel this runs on: a
+resistive touchscreen reports one contact and no gesture, so anything past the
+first screenful has to be reachable by tapping something.
 """
 
 from __future__ import annotations
+
+import math
 
 import pygame
 
@@ -44,14 +51,46 @@ class SystemsScreen(Screen):
         self.tiles: list[EntityTile] = []
         self._filters: list[Button] = []
         self._list_rect = pygame.Rect(0, 0, 1, 1)
+        #: the list rectangle minus the pager strip, when there is one
+        self._tiles_rect = pygame.Rect(0, 0, 1, 1)
         self._content_height = 0.0
         self._known_revision = -1
         self._columns = 3
+        self._page_step = 1.0
+        self.btn_page_prev = Button("<", lambda: self._turn_page(-1), compact=True)
+        self.btn_page_next = Button(">", lambda: self._turn_page(1), compact=True)
+        self.btn_page_prev.visible = self.btn_page_next.visible = False
 
     def _set_filter(self, domain: str | None) -> None:
         self.filter = domain
         self.scroll = 0.0
         self._known_revision = -1
+
+    # -- paging ----------------------------------------------------------
+    @property
+    def page(self) -> int:
+        """Which page the current offset sits on, counting from zero.
+
+        Rounded *up*: the last page is a short one - the offset stops at
+        ``_max_scroll``, not at a multiple of the step - and an operator who
+        has reached the bottom is on the last page, not still on the one
+        before it.
+        """
+        if self._page_step <= 0:
+            return 0
+        return math.ceil(self.scroll / self._page_step - 1e-6)
+
+    @property
+    def pages(self) -> int:
+        """How many taps of ``>`` the list is deep, plus the page you start on."""
+        if self._page_step <= 0:
+            return 1
+        return 1 + math.ceil(self._max_scroll / self._page_step - 1e-6)
+
+    def _turn_page(self, step: int) -> None:
+        """Move by whole pages, snapping a wheel-scrolled offset onto the grid."""
+        target = (self.page + step) * self._page_step
+        self.scroll = max(0.0, min(self._max_scroll, target))
 
     def layout(self, rect: pygame.Rect, ctx: UIContext) -> None:
         t = ctx.theme
@@ -96,33 +135,69 @@ class SystemsScreen(Screen):
                                      e.entity_id))
         gap = ctx.u(ctx.theme.gap) * 0.6
         tile_h = max(ctx.u(ctx.theme.touch_min), 34)
-        col_w = (self._list_rect.width - gap * (self._columns - 1)) / self._columns
+        pitch = tile_h + gap
+        rows = (len(entities) + self._columns - 1) // self._columns
+        self._content_height = rows * pitch
+
+        # The pager only exists when the list overruns, and it costs the list
+        # the strip it stands in - which can itself push one more row out of
+        # view, so the fit is decided against the reduced height.
+        pager_h = max(ctx.u(ctx.theme.touch_min * 0.8), 30)
+        self._tiles_rect = pygame.Rect(self._list_rect)
+        if self._content_height > self._tiles_rect.height:
+            self._tiles_rect.height = max(round(pitch), self._tiles_rect.height - round(pager_h + gap))
+            self._layout_pager(ctx, pager_h, gap)
+        self.btn_page_prev.visible = self.btn_page_next.visible = (
+            self._content_height > self._tiles_rect.height
+        )
+
+        per_page = max(1, int((self._tiles_rect.height + gap) // pitch))
+        self._page_step = per_page * pitch
+        self.scroll = max(0.0, min(self._max_scroll, self.scroll))
+        self.btn_page_prev.enabled = self.scroll > 0
+        self.btn_page_next.enabled = self.scroll < self._max_scroll
+
+        col_w = (self._tiles_rect.width - gap * (self._columns - 1)) / self._columns
         self.tiles = []
         for index, entity in enumerate(entities):
             row, col = divmod(index, self._columns)
             rect = pygame.Rect(
-                round(self._list_rect.left + col * (col_w + gap)),
-                round(self._list_rect.top + row * (tile_h + gap)),
+                round(self._tiles_rect.left + col * (col_w + gap)),
+                round(self._tiles_rect.top + row * pitch),
                 round(col_w), round(tile_h),
             )
             tile = EntityTile(entity.entity_id)
             tile.layout(rect)
             self.tiles.append(tile)
-        rows = (len(entities) + self._columns - 1) // self._columns
-        self._content_height = rows * (tile_h + gap)
+
+    def _layout_pager(self, ctx: UIContext, height: float, gap: float) -> None:
+        """Two buttons on the strip below the list, right-aligned.
+
+        Right is where the thumb rests on a wall panel, and it leaves the left
+        of the strip for the page counter.
+        """
+        width = max(ctx.u(ctx.theme.touch_min * 1.4), 48)
+        top = round(self._list_rect.bottom - height)
+        self.btn_page_prev.layout(pygame.Rect(
+            round(self._list_rect.right - width * 2 - gap), top, round(width), round(height)))
+        self.btn_page_next.layout(pygame.Rect(
+            round(self._list_rect.right - width), top, round(width), round(height)))
 
     @property
     def _max_scroll(self) -> float:
-        return max(0.0, self._content_height - self._list_rect.height)
+        return max(0.0, self._content_height - self._tiles_rect.height)
 
     def handle(self, event: pygame.event.Event, ctx: UIContext) -> bool:
         for button in self._filters:
             if button.handle(event, ctx):
                 return True
+        for button in (self.btn_page_prev, self.btn_page_next):
+            if button.visible and button.enabled and button.handle(event, ctx):
+                return True
         if event.type == pygame.MOUSEWHEEL and self._list_rect.collidepoint(ctx.pointer):
             self.scroll = max(0.0, min(self._max_scroll, self.scroll - event.y * ctx.u(60)))
             return True
-        if event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP) and self._list_rect.collidepoint(event.pos):
+        if event.type in (pygame.MOUSEBUTTONDOWN, pygame.MOUSEBUTTONUP) and self._tiles_rect.collidepoint(event.pos):
             shifted = pygame.event.Event(event.type, {**event.dict,
                                                       "pos": (event.pos[0], event.pos[1] + self.scroll)})
             for tile in self.tiles:
@@ -139,11 +214,11 @@ class SystemsScreen(Screen):
 
         self._panel.draw(surface, ctx)
         clip = surface.get_clip()
-        surface.set_clip(self._list_rect)
+        surface.set_clip(self._tiles_rect)
         offset_ctx = ctx
         for tile in self.tiles:
             moved = tile.rect.move(0, -round(self.scroll))
-            if moved.bottom < self._list_rect.top or moved.top > self._list_rect.bottom:
+            if moved.bottom < self._tiles_rect.top or moved.top > self._tiles_rect.bottom:
                 continue
             original = tile.rect
             tile.rect = moved
@@ -152,15 +227,31 @@ class SystemsScreen(Screen):
         surface.set_clip(clip)
 
         if self._max_scroll > 0:
-            track_x = self._list_rect.right - ctx.u(3)
-            frac = self._list_rect.height / self._content_height
-            bar_h = max(ctx.u(24), self._list_rect.height * frac)
-            travel = (self._list_rect.height - bar_h) * (self.scroll / self._max_scroll)
+            track_x = self._tiles_rect.right - ctx.u(3)
+            frac = self._tiles_rect.height / self._content_height
+            bar_h = max(ctx.u(24), self._tiles_rect.height * frac)
+            travel = (self._tiles_rect.height - bar_h) * (self.scroll / self._max_scroll)
             pygame.draw.rect(surface, t.rule_bright,
-                             pygame.Rect(track_x, round(self._list_rect.top + travel),
+                             pygame.Rect(track_x, round(self._tiles_rect.top + travel),
                                          ctx.px(3), round(bar_h)))
+        self._draw_pager(surface, ctx)
 
         self._draw_diagnostics(surface, ctx)
+
+    def _draw_pager(self, surface: pygame.Surface, ctx: UIContext) -> None:
+        if not self.btn_page_next.visible:
+            return
+        t = ctx.theme
+        # the wheel can leave the offset between pages, so the buttons take
+        # their enabled state from the offset itself, not from the page number
+        self.btn_page_prev.enabled = self.scroll > 0
+        self.btn_page_next.enabled = self.scroll < self._max_scroll
+        self.btn_page_prev.draw(surface, ctx)
+        self.btn_page_next.draw(surface, ctx)
+        blit_text(surface, ctx.book, f"PAGE {self.page + 1}/{self.pages}",
+                  ctx.font_px(t.size_micro), t.inop,
+                  (self._list_rect.left, self.btn_page_prev.rect.centery),
+                  anchor="midleft", mono=True)
 
     def _draw_diagnostics(self, surface: pygame.Surface, ctx: UIContext) -> None:
         t = ctx.theme

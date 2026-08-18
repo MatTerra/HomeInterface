@@ -72,9 +72,17 @@ On the plan screen specifically:
 | Right-drag           | Pan                                   |
 | `PGUP` / `PGDN`      | Change floor                          |
 | `F`                  | Fit view (reset zoom/pan)             |
+| `G`                  | Switch overview: drawing <-> room grid |
 | Tap a device         | Select it (shows the inspector)       |
 | Tap the same device again | Actuate it (toggle/etc.)         |
 | Tap a room           | Show that room's devices              |
+| Tap `GRID` / `PLAN`  | Same switch as `G`, for touch         |
+
+The overview stage has two presentations. The drawing is true to scale, which
+makes a lavatory or a corridor a small target; `GRID` replaces it with one
+card per place - zones counted once, like the drawing names them - each an
+equal touch target showing how many of its devices are on. Both lead into the
+same focus stage, so the choice is only about finding the place.
 
 ## Running on the SPI panel
 

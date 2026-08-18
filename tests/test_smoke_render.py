@@ -94,3 +94,26 @@ def test_screens_relayout_cleanly_after_resize(size):
     finally:
         app.backend.stop()
         pygame.quit()
+
+
+@pytest.mark.parametrize("size", SIZES)
+def test_screen_switched_by_an_event_draws_in_the_same_frame(size):
+    """A tap on the nav rail must not draw a screen that never laid out.
+
+    The frame lays out *before* it drains input, so an event that switches
+    screens leaves the incoming screen unlaid — and every screen builds its
+    widgets in layout(), so drawing one raises AttributeError. The panel dies
+    on the first tap on VITALS. Driving App.tick() is what catches this;
+    setting screen_index by hand (as the tests above do) never can.
+    """
+    app = _build_app(*size)
+    try:
+        app.tick()
+        for _ in range(len(app.screens)):
+            pygame.event.post(pygame.event.Event(pygame.KEYDOWN, key=pygame.K_TAB,
+                                                 mod=0, unicode="\t", scancode=0))
+            app.tick()
+            assert _surface_is_non_blank(app.surface, app.theme.background)
+    finally:
+        app.backend.stop()
+        pygame.quit()

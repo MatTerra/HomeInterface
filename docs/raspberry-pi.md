@@ -159,33 +159,30 @@ the faster way to check an existing calibration.
 
 ## 8. Autostart
 
-`/etc/systemd/system/homeinterface.service` (replace `pi` with your username):
-
-```ini
-[Unit]
-Description=Home Interface panel
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-User=pi
-SupplementaryGroups=video input
-WorkingDirectory=/home/pi/HomeInterface
-ExecStart=/home/pi/HomeInterface/.venv/bin/python main.py --driver fbdev
-Restart=always
-RestartSec=5
-# Home Assistant credentials, if backend.kind is homeassistant
-# Environment=HA_URL=http://homeassistant.local:8123
-# Environment=HA_TOKEN=...
-
-[Install]
-WantedBy=multi-user.target
-```
+The unit lives in the repo at [`deploy/homeinterface.service`](../deploy/homeinterface.service).
+It pins the floor plan on the command line rather than in `config/app.yaml`:
+the committed config keeps pointing at the example plan so a fresh clone runs
+anywhere, and the panel — the one machine that must always show the real house
+— states its plan in the unit that starts it.
 
 ```bash
+sudo cp deploy/homeinterface.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now homeinterface
 journalctl -u homeinterface -f
+```
+
+Replace `mateus` with your username in `User=`, `WorkingDirectory=` and
+`ExecStart=` if it differs. `--driver fbdev` is deliberate: it fails loudly
+instead of silently falling back to a window that nobody can see.
+
+The touchscreen module is not autoloaded on a headless Pi — the STMPE platform
+device is created by the overlay, but nothing binds a driver to it, so
+`/dev/input/` stays empty and the app reports `no touch device found`. Load it
+at boot:
+
+```bash
+echo stmpe_ts | sudo tee /etc/modules-load.d/stmpe.conf
 ```
 
 ## Tuning
@@ -208,6 +205,7 @@ only changed rows. A static screen therefore costs no SPI traffic at all.
 |---|---|
 | `Permission denied` on `/dev/fb1` | user not in `video` group, or you did not log out/in after `usermod`. |
 | `Permission denied` on `/dev/input/eventN` | same, for the `input` group. The app keeps running without touch and says so. |
+| `no touch device found` while `dmesg` shows `stmpe610 detected` | the `stmpe_ts` module is not loaded, so the platform device never becomes an input device. `sudo modprobe stmpe_ts`, then persist it in `/etc/modules-load.d/stmpe.conf`. |
 | `no framebuffer device` | overlay not loaded — check `dmesg` and `/boot/firmware/config.txt`. |
 | `Nbpp panel, only 16bpp is supported` | you pointed it at HDMI's `fb0` (usually 32bpp) instead of the TFT. |
 | Taps land mirrored or on the wrong axis | run `tools/touchcal.py`. |

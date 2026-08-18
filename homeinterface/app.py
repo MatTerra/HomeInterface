@@ -257,36 +257,7 @@ class App:
         self.running = True
         try:
             while self.running:
-                ctx = self._context()
-                title_r, rail_r, content_r, footer_r = self._regions(ctx)
-                self._layout_chrome(rail_r, title_r, footer_r, ctx)
-                self.screen.ensure_layout(content_r, ctx)
-
-                if self.touch is not None:
-                    # feeds synthetic mouse events into the queue we read below
-                    self.touch.pump()
-                events = pygame.event.get()
-                for event in events:
-                    self._handle(event, ctx)
-
-                second = int(ctx.now)
-                blink = ctx.blink
-                revision = self.backend.revision
-                dirty = (
-                    self._redraw_requested
-                    or bool(events)
-                    or revision != self._last_revision
-                    or second != self._last_second
-                    or blink != self._last_blink
-                )
-                self._last_revision = revision
-                self._last_second = second
-                self._last_blink = blink
-
-                if dirty:
-                    self._redraw_requested = False
-                    self._draw(ctx, title_r, rail_r, content_r, footer_r)
-                    self._present()
+                self.tick()
                 clock.tick(fps)
                 self._fps = clock.get_fps()
         finally:
@@ -294,6 +265,50 @@ class App:
             self._close_output()
             pygame.quit()
         return 0
+
+    def tick(self) -> None:
+        """One frame: lay out, drain input, draw and present if anything moved.
+
+        Split out of :meth:`run` so a test can drive real frames — including
+        the event that switches screens — without a clock or a window.
+        """
+        ctx = self._context()
+        title_r, rail_r, content_r, footer_r = self._regions(ctx)
+        self._layout_chrome(rail_r, title_r, footer_r, ctx)
+        # laid out before the events so widget hit-testing has real rects
+        self.screen.ensure_layout(content_r, ctx)
+
+        if self.touch is not None:
+            # feeds synthetic mouse events into the queue we read below
+            self.touch.pump()
+        events = pygame.event.get()
+        for event in events:
+            self._handle(event, ctx)
+
+        second = int(ctx.now)
+        blink = ctx.blink
+        revision = self.backend.revision
+        dirty = (
+            self._redraw_requested
+            or bool(events)
+            or revision != self._last_revision
+            or second != self._last_second
+            or blink != self._last_blink
+        )
+        self._last_revision = revision
+        self._last_second = second
+        self._last_blink = blink
+
+        if not dirty:
+            return
+        self._redraw_requested = False
+        # an event may have switched screens since the call above; the
+        # incoming screen has never been laid out, and drawing a screen whose
+        # layout() never ran raises AttributeError. No-op when the rect is
+        # unchanged and the layout already ran.
+        self.screen.ensure_layout(content_r, ctx)
+        self._draw(ctx, title_r, rail_r, content_r, footer_r)
+        self._present()
 
     def _present(self) -> None:
         """Show the frame we just drew: SPI push on a panel, flip in a window."""

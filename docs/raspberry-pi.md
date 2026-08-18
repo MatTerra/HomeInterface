@@ -185,6 +185,30 @@ at boot:
 echo stmpe_ts | sudo tee /etc/modules-load.d/stmpe.conf
 ```
 
+## 9. Deploy an update
+
+[`deploy/deploy.sh`](../deploy/deploy.sh) ships the *working tree* over ssh and
+restarts the unit, so testing a change on the real panel does not require
+committing it first:
+
+```bash
+bash deploy/deploy.sh          # sync + install deps if changed + restart
+bash deploy/deploy.sh --logs   # ... and then follow the journal
+bash deploy/deploy.sh --unit   # also refresh the systemd unit
+```
+
+It targets the ssh alias `pitft` (`--host`, or `$HOST`), sends every
+git-tracked file except `shots/`, and reinstalls `requirements.txt` only when
+its hash changed - `pip install` on a Pi 3 is not something to repeat for
+nothing.
+
+`config/app.yaml` is **not** sent: the panel's copy carries the touch
+calibration from step 7, which is a property of that digitiser and not of the
+repo. `--with-config` overrides that when you do mean to replace it.
+
+`tar` only adds, so a file deleted here lingers there; `--prune` diffs against
+the manifest of the previous deploy and removes what is no longer shipped.
+
 ## Tuning
 
 | Knob | Where | Effect |

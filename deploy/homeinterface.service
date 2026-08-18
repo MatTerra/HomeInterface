@@ -1,0 +1,22 @@
+[Unit]
+Description=Home Interface panel
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=mateus
+SupplementaryGroups=video input
+WorkingDirectory=/home/mateus/HomeInterface
+# The plan is pinned here, not in config/app.yaml: the panel always boots the
+# real house, while app.yaml keeps shipping the example plan for development.
+ExecStart=/home/mateus/HomeInterface/.venv/bin/python main.py \
+    --driver fbdev \
+    --plan config/floorplan.yaml
+Restart=always
+RestartSec=5
+# Home Assistant credentials, if backend.kind is homeassistant
+# Environment=HA_URL=http://homeassistant.local:8123
+# Environment=HA_TOKEN=...
+
+[Install]
+WantedBy=multi-user.target

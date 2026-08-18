@@ -28,6 +28,10 @@ MARKER_RADIUS_M = 0.42
 WALL_THICKNESS = 0.15
 
 
+def _inside(point: Point, box: BBox) -> bool:
+    return box.min_x <= point[0] <= box.max_x and box.min_y <= point[1] <= box.max_y
+
+
 def device_icon(
     surface: pygame.Surface,
     kind: str,
@@ -154,22 +158,32 @@ class FloorRenderer:
         zone_rooms: frozenset[str] | None = None,
         show_grid: bool = True,
         units: str = "m",
+        devices: list[Device] | None = None,
+        visible_rooms: frozenset[str] | None = None,
+        room_labels: dict[str, str | None] | None = None,
+        show_area: bool = True,
+        label_sizes: tuple[float, ...] | None = None,
+        marker_max_u: float = 13.0,
     ) -> None:
         states = states or {}
+        shown = floor.devices if devices is None else devices
         clip = surface.get_clip()
         surface.set_clip(view.rect)
 
         static = self._static_layer(
-            floor, view, vp, selected_room, zone_rooms or frozenset(), show_grid, units
+            floor, view, vp, selected_room, zone_rooms or frozenset(), show_grid, units,
+            shown, visible_rooms, room_labels or {}, show_area, label_sizes,
+            marker_max_u,
         )
         surface.blit(static, view.rect.topleft)
 
-        for device in floor.devices:
+        for device in shown:
             self._device(
                 surface, device, view, vp,
                 level=states.get(device.entity_id, "inop"),
                 selected=device.entity_id == selected_device,
                 hover=device.entity_id == hover_device,
+                max_u=marker_max_u,
             )
 
         surface.set_clip(clip)
@@ -184,6 +198,12 @@ class FloorRenderer:
         zone_rooms: frozenset[str],
         show_grid: bool,
         units: str,
+        devices: list[Device],
+        visible_rooms: frozenset[str] | None,
+        room_labels: dict[str, str | None],
+        show_area: bool,
+        label_sizes: tuple[float, ...] | None,
+        marker_max_u: float,
     ) -> pygame.Surface:
         key = (
             floor.id,
@@ -195,6 +215,12 @@ class FloorRenderer:
             zone_rooms,
             show_grid,
             units,
+            tuple(d.entity_id for d in devices),
+            visible_rooms,
+            tuple(sorted(room_labels.items())),
+            show_area,
+            label_sizes,
+            marker_max_u,
         )
         if self._static_cache is not None and self._static_cache[0] == key:
             return self._static_cache[1]
@@ -221,27 +247,40 @@ class FloorRenderer:
                 spacing *= 2  # keep the lattice readable when zoomed out
             vd.hairline_grid(layer, local_rect, t.rule, spacing=spacing, alpha=26)
 
-        for room in floor.rooms:
+        # In focus mode only the room (or the zone's rooms) is drawn: the rest
+        # of the storey is not dimmed but genuinely absent, so a single room
+        # gets the whole rectangle and the devices in it are finally legible.
+        rooms = [r for r in floor.rooms if visible_rooms is None or r.id in visible_rooms]
+        scope = self._scope_bbox(rooms) if visible_rooms is not None else None
+
+        for room in rooms:
             self._room(layer, room, shifted, vp,
                        selected=room.id == selected_room, in_zone=room.id in zone_rooms)
         # Walls first from the rooms, then the explicit ones: the ``walls``
         # block is for anything the rooms cannot express, such as the free-
         # standing sides of the balcony.
-        self._partitions(layer, floor, shifted, vp)
+        self._partitions(layer, rooms, shifted, vp)
         for wall in floor.walls:
-            self._wall(layer, wall, shifted, vp)
+            mid = ((wall.a[0] + wall.b[0]) / 2, (wall.a[1] + wall.b[1]) / 2)
+            if scope is None or _inside(mid, scope):
+                self._wall(layer, wall, shifted, vp)
         # Selection and zone rings go on top of the walls, or the wall pass
         # would paint over the very cue the operator is looking for.
-        for room in floor.rooms:
+        for room in rooms:
             if room.id == selected_room:
                 self._room_edge(layer, room, shifted, vp)
         if zone_rooms:
-            self._zone_outline(layer, floor, shifted, vp, zone_rooms)
+            self._zone_outline(layer, rooms, shifted, vp, zone_rooms, t.data)
         for opening in floor.openings:
-            self._opening(layer, opening, shifted, vp)
-        markers = self._marker_rects(floor, shifted, vp)
-        for room in floor.rooms:
-            self._room_label(layer, room, shifted, vp, units, markers)
+            if scope is None or _inside(opening.at, scope):
+                self._opening(layer, opening, shifted, vp)
+        markers = self._marker_rects(devices, shifted, vp, marker_max_u)
+        for room in rooms:
+            label = room_labels.get(room.id, room.name)
+            if label is None:
+                continue
+            self._room_label(layer, room, shifted, vp, units, markers,
+                             text=label, show_area=show_area, sizes=label_sizes)
 
         self._scale_bar(layer, shifted, vp, units)
 
@@ -273,7 +312,21 @@ class FloorRenderer:
             return
         pygame.draw.polygon(surface, self._room_tint(room, selected, in_zone), pts)
 
-    def _partitions(self, surface, floor: Floor, view: PlanView, vp: Viewport) -> None:
+    @staticmethod
+    def _scope_bbox(rooms: list[Room]) -> BBox | None:
+        """Union of the drawn rooms, slackened by a wall's worth of margin.
+
+        Used to decide which explicit walls and which openings still belong to
+        the picture once the rest of the storey is gone.
+        """
+        if not rooms:
+            return None
+        box = rooms[0].bbox
+        for room in rooms[1:]:
+            box = box.merged(room.bbox)
+        return box.expanded(WALL_THICKNESS * 3)
+
+    def _partitions(self, surface, rooms: list[Room], view: PlanView, vp: Viewport) -> None:
         """Build every wall out of the rooms themselves.
 
         A plan's walls are the negative space between its rooms, so deriving
@@ -288,7 +341,7 @@ class FloorRenderer:
         the inner half of the exterior wall.
         """
         width = max(vp.px(self.theme.stroke_bold), int(view.length(WALL_THICKNESS)))
-        for room in floor.rooms:
+        for room in rooms:
             pts = view.poly(room.polygon)
             if len(pts) >= 3:
                 pygame.draw.polygon(surface, self._wall_colour, pts, width)
@@ -299,8 +352,8 @@ class FloorRenderer:
         if len(pts) >= 3:
             pygame.draw.polygon(surface, self.theme.data, pts, vp.px(self.theme.stroke_bold))
 
-    def _zone_outline(self, surface, floor: Floor, view: PlanView, vp: Viewport,
-                      zone_rooms: frozenset[str]) -> None:
+    def _zone_outline(self, surface, rooms: list[Room], view: PlanView, vp: Viewport,
+                      zone_rooms: frozenset[str], colour: RGB) -> None:
         """Dashed ring around each room of the active zone.
 
         Drawn per room rather than as a true union outline: computing the
@@ -308,14 +361,14 @@ class FloorRenderer:
         that reads just as well as a dashed edge on every member.
         """
         t = self.theme
-        for room in floor.rooms:
+        for room in rooms:
             if room.id not in zone_rooms:
                 continue
             pts = view.poly(room.polygon)
             if len(pts) < 3:
                 continue
             for i in range(len(pts)):
-                vd.dashed_line(surface, t.data, pts[i], pts[(i + 1) % len(pts)],
+                vd.dashed_line(surface, colour, pts[i], pts[(i + 1) % len(pts)],
                                width=vp.px(t.stroke_bold), dash=vp.u(5), gap=vp.u(4))
 
     @property
@@ -371,15 +424,16 @@ class FloorRenderer:
                 surface, t.inop, (a[0] + ox, a[1] + oy), (b[0] + ox, b[1] + oy), vp.px(t.stroke)
             )
 
-    def _marker_radius(self, view: PlanView, vp: Viewport) -> float:
+    def _marker_radius(self, view: PlanView, vp: Viewport, max_u: float = 13.0) -> float:
         """Marker radius in pixels; kept in one place so labels can dodge them."""
-        return max(vp.u(6.0), min(view.length(MARKER_RADIUS_M), vp.u(13.0)))
+        return max(vp.u(6.0), min(view.length(MARKER_RADIUS_M), vp.u(max_u)))
 
-    def _marker_rects(self, floor: Floor, view: PlanView, vp: Viewport) -> list[pygame.Rect]:
-        r = self._marker_radius(view, vp) * 1.25  # the selected/hover size, so
-        side = round(r * 2)                       # the layout does not shift on hover
+    def _marker_rects(self, devices: list[Device], view: PlanView, vp: Viewport,
+                      max_u: float = 13.0) -> list[pygame.Rect]:
+        r = self._marker_radius(view, vp, max_u) * 1.25  # the selected/hover size, so
+        side = round(r * 2)                              # layout does not shift on hover
         out = []
-        for device in floor.devices:
+        for device in devices:
             cx, cy = view.to_screen(device.at)
             rect = pygame.Rect(0, 0, side, side)
             rect.center = (round(cx), round(cy))
@@ -429,7 +483,8 @@ class FloorRenderer:
         return best
 
     def _room_label(self, surface, room: Room, view: PlanView, vp: Viewport, units: str,
-                    markers: list[pygame.Rect] | None = None) -> None:
+                    markers: list[pygame.Rect] | None = None, *, text: str | None = None,
+                    show_area: bool = True, sizes: tuple[float, ...] | None = None) -> None:
         cx, cy = view.to_screen(room.centroid)
         # The free span through the anchor, not the bounding box: an S-shaped
         # bedroom or an L-shaped kitchen would otherwise be told it has the
@@ -443,9 +498,9 @@ class FloorRenderer:
         # fit test is against the room's own size, never against an ink-scaled
         # constant - that made big displays drop labels small ones kept.
         t = self.theme
-        name = room.name.upper()
+        name = (text if text is not None else room.name).upper()
         name_px = 0
-        for size in (t.size_small, t.size_micro):
+        for size in (sizes or (t.size_small, t.size_micro)):
             candidate = vp.font_px(size)
             if candidate > box_h * 0.55:
                 continue
@@ -464,7 +519,7 @@ class FloorRenderer:
         area = ""
         area_px = vp.font_px(self.theme.size_micro)
         gap = vp.u(3)
-        if room.area > 0 and box_h > (name_px + area_px) * 1.6:
+        if show_area and room.area > 0 and box_h > (name_px + area_px) * 1.6:
             text = f"{room.area:.1f} {units}²"
             # Never truncate a measurement - "12.5 m…" is a worse label than no
             # label - so an area that does not fit is simply dropped. The name
@@ -504,7 +559,7 @@ class FloorRenderer:
 
     def _device(
         self, surface, device: Device, view: PlanView, vp: Viewport,
-        *, level: str, selected: bool, hover: bool,
+        *, level: str, selected: bool, hover: bool, max_u: float = 13.0,
     ) -> None:
         t = self.theme
         colour = t.status_color(level)
@@ -513,7 +568,7 @@ class FloorRenderer:
         # 15-room house drawn large would otherwise get markers that swamp the
         # rooms they sit in. Clamped so it stays visible when zoomed out and
         # stays tappable at any zoom.
-        r = max(vp.u(6.0), min(view.length(MARKER_RADIUS_M), vp.u(13.0)))
+        r = self._marker_radius(view, vp, max_u)
         if selected or hover:
             r *= 1.25
         marker = pygame.Rect(0, 0, round(r * 2), round(r * 2))
@@ -553,11 +608,16 @@ class FloorRenderer:
         )
 
 
-def device_at(floor: Floor, view: PlanView, pixel: tuple[float, float], radius_px: float) -> Device | None:
-    """Nearest device marker within ``radius_px`` of the pointer."""
+def device_at(floor: Floor, view: PlanView, pixel: tuple[float, float], radius_px: float,
+              devices: list[Device] | None = None) -> Device | None:
+    """Nearest device marker within ``radius_px`` of the pointer.
+
+    ``devices`` narrows the hit test to what is actually on screen - picking a
+    marker that is not drawn is worse than picking nothing.
+    """
     best: Device | None = None
     best_d = radius_px
-    for device in floor.devices:
+    for device in (floor.devices if devices is None else devices):
         dx, dy = view.to_screen(device.at)
         d = math.hypot(dx - pixel[0], dy - pixel[1])
         if d <= best_d:

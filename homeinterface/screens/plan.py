@@ -1,5 +1,14 @@
 """Floor plan screen: the primary page.
 
+The screen works in two stages, because a whole storey drawn small enough to
+fit a 480x320 panel leaves neither the names nor the device markers legible:
+
+* **overview** - the storey as geometry and names only.  No devices, no
+  inspector, so the drawing gets the full width.  Rooms that belong to a zone
+  are named for their zone, which is the unit the operator actually commands.
+* **focus** - one room, or one zone, drawn alone and scaled to fill the plan
+  rectangle, with its devices and the inspector beside it.
+
 Layout adapts to the panel's aspect: on a 21:9 wall display the inspector
 sits beside the plan; on anything squarer it drops underneath.  The floor
 selector is a vertical elevation strip - lowest storey at the bottom, the way
@@ -12,7 +21,7 @@ import pygame
 
 from .. import draw as vd
 from ..floorplan import FloorRenderer, PlanView, device_at
-from ..floorplan.model import Device, Floor, Room
+from ..floorplan.model import BBox, Device, Floor, Room
 from ..fonts import blit_text, truncate
 from ..scaling import Box
 from ..theme import mix
@@ -82,6 +91,7 @@ class PlanScreen(Screen):
     key = "plan"
     title = "PLAN"
     subtitle = "HOUSE LAYOUT / DEVICE MAP"
+    HINT = "TAP A ROOM OR ZONE"
 
     def __init__(self, app):
         super().__init__(app)
@@ -93,6 +103,8 @@ class PlanScreen(Screen):
         self.selected_device: str | None = None
         self.selected_room: str | None = None
         self.selected_zone: str | None = None
+        #: stage: False = whole storey, names only; True = one room/zone alone
+        self.focused = False
         #: when the tapped room belongs to a zone, control the zone by default -
         #: the grouping exists precisely because that is the intended unit
         self.prefer_zone = True
@@ -111,6 +123,7 @@ class PlanScreen(Screen):
         self.btn_zoom_in = Button("+", lambda: self._zoom(ZOOM_STEP), compact=True)
         self.btn_zoom_out = Button("-", lambda: self._zoom(1 / ZOOM_STEP), compact=True)
         self.btn_reset = Button("FIT", self._reset_view, compact=True)
+        self.btn_back = Button("< PLAN", self._exit_focus, compact=True)
 
     # -- state -----------------------------------------------------------
     @property
@@ -119,7 +132,7 @@ class PlanScreen(Screen):
 
     @property
     def showing_zone(self) -> bool:
-        return bool(self.selected_zone) and self.prefer_zone and not self.selected_device
+        return bool(self.selected_zone) and self.prefer_zone
 
     @property
     def zone_room_ids(self) -> frozenset[str]:
@@ -127,12 +140,78 @@ class PlanScreen(Screen):
         zone = self.plan.zone(self.selected_zone) if self.selected_zone else None
         return frozenset(zone.room_ids_on(self.floor_id)) if zone else frozenset()
 
+    @property
+    def focus_rooms(self) -> frozenset[str]:
+        """The rooms drawn in focus mode; empty in overview."""
+        if not self.focused:
+            return frozenset()
+        if self.showing_zone:
+            return self.zone_room_ids
+        return frozenset({self.selected_room}) if self.selected_room else frozenset()
+
+    def _focus_devices(self) -> list[Device]:
+        floor = self.floor
+        if floor is None or not self.focused:
+            return []
+        out: list[Device] = []
+        seen: set[str] = set()
+        for room_id in self.focus_rooms:
+            for device in floor.devices_in(room_id):
+                if device.entity_id not in seen:
+                    seen.add(device.entity_id)
+                    out.append(device)
+        return out
+
+    def _zone_labels(self) -> dict[str, str | None]:
+        """Overview naming: one label per zone, on its largest room.
+
+        A zone exists because its rooms are operated together, so the overview
+        names the unit the tap will select rather than the parts it is made of.
+        """
+        floor = self.floor
+        if floor is None:
+            return {}
+        by_id = {r.id: r for r in floor.rooms}
+        labels: dict[str, str | None] = {}
+        for zone in self.plan.zones_on(self.floor_id):
+            members = [by_id[i] for i in zone.room_ids_on(self.floor_id) if i in by_id]
+            if not members:
+                continue
+            # The member with the most usable label space carries the name -
+            # by free extent, not by area, since the largest room of a zone can
+            # still be a corridor too narrow to print "SERVIÇOS" in.
+            host = max(members, key=lambda r: (r.label_extent[0] * r.label_extent[1], r.area))
+            for room in members:
+                labels[room.id] = zone.name if room is host else None
+        return labels
+
     def _select_floor(self, floor_id: str) -> None:
         self.floor_id = floor_id
+        self._exit_focus()
+
+    def _enter_focus(self, room_id: str) -> None:
+        zone = self.plan.zone_of(self.floor_id, room_id)
+        self.selected_room = room_id
+        self.selected_zone = zone.id if zone else None
+        self.prefer_zone = zone is not None
+        self.selected_device = None
+        self.focused = True
+        self._reset_view()
+        self._inspector_key = None
+        self.invalidate()  # the inspector column only exists in focus mode
+
+    def _exit_focus(self) -> None:
         self.selected_device = None
         self.selected_room = None
         self.selected_zone = None
+        self.focused = False
+        self.hover_device = None
+        # the column those widgets sat in is plan again: drop them now, or a
+        # tap on the drawing lands on a button that is no longer there
+        self._inspector = []
+        self._reset_view()
         self._inspector_key = None
+        self.invalidate()
 
     def _zoom(self, factor: float) -> None:
         self.zoom = max(MIN_ZOOM, min(MAX_ZOOM, self.zoom * factor))
@@ -146,7 +225,11 @@ class PlanScreen(Screen):
         t = ctx.theme
         gap = ctx.u(t.gap)
         box = Box(rect)
-        if ctx.vp.landscape:
+        if not self.focused:
+            # Nothing is selected, so the inspector would only say so: give the
+            # whole rectangle to the drawing instead.
+            plan_box, inspector_box = box, None
+        elif ctx.vp.landscape:
             # 320px of height cannot spare a stacked inspector; keep it beside
             plan_box, inspector_box = box.cols(0.70, 0.30, gap=gap)
         else:
@@ -158,37 +241,70 @@ class PlanScreen(Screen):
         self.strip.selected = self.floor_id
 
         self._plan_rect = plan_area.rect
-        self._inspector_rect = inspector_box.rect
+        self._inspector_rect = inspector_box.rect if inspector_box else pygame.Rect(0, 0, 0, 0)
 
         # A vertical stack would claim a seventh of the plan's width on the
         # 480x320 panel, so the controls sit as a row along the bottom edge,
         # opposite the scale bar.
         btn = max(ctx.u(t.touch_min), 36)
+        zoom_w = btn * 3 + gap * 2
         controls = Box(pygame.Rect(
-            self._plan_rect.right - ctx.u(t.pad) - (btn * 3 + gap * 2),
+            self._plan_rect.right - ctx.u(t.pad) - zoom_w,
             self._plan_rect.bottom - ctx.u(t.pad) - btn,
-            btn * 3 + gap * 2, btn,
+            zoom_w, btn,
         ))
         for widget, cell in zip(
             (self.btn_zoom_out, self.btn_zoom_in, self.btn_reset),
             controls.cols(1, 1, 1, gap=gap),
         ):
             widget.layout(cell.rect)
+        # Back goes to the top right: the bottom left belongs to the scale bar
+        # and the bottom right to the zoom cluster, and a mis-tap there would
+        # throw away the selection instead of nudging the view.
+        back_w = round(btn * 2.0)
+        self.btn_back.layout(pygame.Rect(
+            self._plan_rect.right - ctx.u(t.pad) - back_w,
+            self._plan_rect.top + ctx.u(t.pad),
+            back_w, round(btn * 0.8),
+        ))
         self._inspector_key = None
 
     def _make_view(self, ctx: UIContext) -> PlanView:
         return PlanView(
-            self.plan.common_bbox.expanded(0.4),
+            self._focus_bbox() or self.plan.common_bbox.expanded(0.4),
             self._plan_rect,
             zoom=self.zoom,
             pan=self.pan,
         )
 
+    def _focus_bbox(self) -> BBox | None:
+        """Extent of the focused room/zone, or None in overview.
+
+        Every floor shares one bbox in overview so storeys do not jump; in
+        focus the opposite is wanted - the selection should fill the panel,
+        which is the whole point of the second stage.
+        """
+        floor = self.floor
+        ids = self.focus_rooms
+        if floor is None or not ids:
+            return None
+        boxes = [r.bbox for r in floor.rooms if r.id in ids]
+        if not boxes:
+            return None
+        box = boxes[0]
+        for other in boxes[1:]:
+            box = box.merged(other)
+        # devices sit at the wall line as often as not, and a marker clipped
+        # in half is a marker you cannot tap
+        for device in self._focus_devices():
+            box = box.merged(BBox.around([device.at]))
+        return box.expanded(max(0.35, min(box.width, box.height) * 0.10))
+
     # -- inspector -------------------------------------------------------
     def _build_inspector(self, ctx: UIContext) -> None:
         """Rebuild only when the selection or floor changes."""
         key = (self.floor_id, self.selected_device, self.selected_room, self.selected_zone,
-               self.prefer_zone, self._inspector_rect.size)
+               self.prefer_zone, self.focused, self._inspector_rect.size)
         if key == self._inspector_key:
             return
         self._inspector_key = key
@@ -346,6 +462,8 @@ class PlanScreen(Screen):
 
     def _set_scope(self, prefer_zone: bool) -> None:
         self.prefer_zone = prefer_zone
+        self.selected_device = None
+        self._reset_view()  # the drawn extent changes with the scope
         self._inspector_key = None
 
     def _select_device(self, entity_id: str) -> None:
@@ -354,12 +472,16 @@ class PlanScreen(Screen):
 
     # -- events ----------------------------------------------------------
     def handle(self, event: pygame.event.Event, ctx: UIContext) -> bool:
-        for widget in (self.btn_zoom_in, self.btn_zoom_out, self.btn_reset, self.strip):
+        controls = [self.btn_zoom_in, self.btn_zoom_out, self.btn_reset, self.strip]
+        if self.focused:
+            controls.append(self.btn_back)
+        for widget in controls:
             if widget.handle(event, ctx):
                 return True
-        for widget in self._inspector:
-            if widget.handle(event, ctx):
-                return True
+        if self.focused:
+            for widget in self._inspector:
+                if widget.handle(event, ctx):
+                    return True
 
         floor = self.floor
         view = self._view
@@ -377,9 +499,11 @@ class PlanScreen(Screen):
                 self.pan = (self.pan[0] - dx, self.pan[1] - dy)
                 self._pan_anchor = event.pos
                 return True
-            if self._plan_rect.collidepoint(event.pos):
-                hit = device_at(floor, view, event.pos, ctx.u(18))
+            if self._plan_rect.collidepoint(event.pos) and self.focused:
+                hit = device_at(floor, view, event.pos, ctx.u(18), self._focus_devices())
                 self.hover_device = hit.entity_id if hit else None
+            else:
+                self.hover_device = None
             return False
 
         if event.type == pygame.MOUSEBUTTONDOWN and event.button in (2, 3) and self._plan_rect.collidepoint(event.pos):
@@ -391,24 +515,37 @@ class PlanScreen(Screen):
             return True
 
         if event.type == pygame.MOUSEBUTTONUP and event.button == 1 and self._plan_rect.collidepoint(event.pos):
-            hit = device_at(floor, view, event.pos, ctx.u(20))
+            room = floor.room_at(view.to_plan(event.pos))
+            if not self.focused:
+                # stage one: a tap picks the place, nothing else is on the plan
+                if room is not None:
+                    self._enter_focus(room.id)
+                return True
+
+            hit = device_at(floor, view, event.pos, ctx.u(20), self._focus_devices())
             if hit is not None:
                 if self.selected_device == hit.entity_id:
                     ctx.backend.toggle(hit.entity_id)  # second tap acts
                 else:
                     self.selected_device = hit.entity_id
-                    self.selected_room = None
                 self._inspector_key = None
                 return True
-            room = floor.room_at(view.to_plan(event.pos))
-            self.selected_room = room.id if room else None
-            zone = self.plan.zone_of(floor.id, room.id) if room else None
-            self.selected_zone = zone.id if zone else None
+            if room is None or room.id not in self.focus_rooms:
+                # tapping the emptiness around the focused room is the natural
+                # way back out of it
+                self._exit_focus()
+                return True
+            # inside a zone, the tapped member becomes what "ROOM" scope means
+            self.selected_room = room.id
             self.selected_device = None
             self._inspector_key = None
             return True
 
         if event.type == pygame.KEYDOWN:
+            # not ESC: the shell claims that one for quit
+            if event.key == pygame.K_BACKSPACE and self.focused:
+                self._exit_focus()
+                return True
             if event.key in (pygame.K_PAGEUP, pygame.K_PAGEDOWN):
                 step = 1 if event.key == pygame.K_PAGEUP else -1
                 index = self.plan.index_of(self.floor_id) + step
@@ -438,10 +575,12 @@ class PlanScreen(Screen):
                       t.inop, (self._plan_rect.centerx, self._plan_rect.centery + ctx.u(28)),
                       anchor="midtop", mono=True)
         else:
+            devices = self._focus_devices()
             states = {
                 d.entity_id: (e.level if (e := ctx.backend.get(d.entity_id)) else "inop")
-                for d in floor.devices
+                for d in devices
             }
+            labels = {} if self.focused else self._zone_labels()
             self.renderer.render(
                 surface, floor, self._view, ctx.vp,
                 states=states,
@@ -450,18 +589,64 @@ class PlanScreen(Screen):
                 hover_device=self.hover_device,
                 zone_rooms=self.zone_room_ids if self.showing_zone else frozenset(),
                 units=self.plan.units,
+                devices=devices,
+                visible_rooms=self.focus_rooms if self.focused else None,
+                room_labels=labels,
+                # stage one is a name map: areas are detail for stage two, and
+                # a second line per room is what makes the overview unreadable
+                show_area=self.focused,
+                label_sizes=((t.size_large, t.size_body, t.size_small, t.size_micro)
+                             if self.focused else None),
+                # zoomed into one room the markers are the interface, not
+                # annotation - let them grow to a real touch target
+                marker_max_u=26.0 if self.focused else 13.0,
             )
-            blit_text(surface, ctx.book, f"{floor.name.upper()}  ·  {len(floor.rooms)} ROOMS  ·  "
-                                         f"{len(floor.devices)} DEVICES",
-                      ctx.font_px(t.size_micro), t.inop,
-                      (self._plan_rect.left + ctx.u(t.pad), self._plan_rect.top + ctx.u(t.pad)),
-                      anchor="topleft", mono=True)
+            self._draw_caption(surface, ctx, floor)
 
         self.strip.draw(surface, ctx)
         for widget in (self.btn_zoom_in, self.btn_zoom_out, self.btn_reset):
             widget.draw(surface, ctx)
+        if self.focused:
+            self.btn_back.draw(surface, ctx)
+            self._draw_inspector(surface, ctx, floor)
 
-        self._draw_inspector(surface, ctx, floor)
+    def _hint_width(self, ctx: UIContext) -> float:
+        return ctx.book.font(ctx.font_px(ctx.theme.size_micro), mono=True).size(self.HINT)[0]
+
+    def _draw_caption(self, surface: pygame.Surface, ctx: UIContext, floor: Floor) -> None:
+        """Top-left status line: what you are looking at, and how much of it."""
+        t = ctx.theme
+        if self.focused:
+            devices = self._focus_devices()
+            if self.showing_zone:
+                zone = self.plan.zone(self.selected_zone)
+                place = zone.name.upper() if zone else "ZONE"
+                scope = f"{len(self.focus_rooms)} ROOMS"
+            else:
+                room = next((r for r in floor.rooms if r.id == self.selected_room), None)
+                place = room.name.upper() if room else "ROOM"
+                scope = f"{room.area:.1f} {self.plan.units}²" if room else ""
+            parts = [floor.tag.upper(), place, scope, f"{len(devices)} DEVICES"]
+        else:
+            parts = [floor.name.upper(), f"{len(floor.rooms)} ROOMS",
+                     f"{len(self.plan.zones_on(self.floor_id))} ZONES"]
+        left = self._plan_rect.left + ctx.u(t.pad)
+        # the caption shares the top edge with the back button (focus) or the
+        # tap hint (overview), so it yields the space rather than run under them
+        limit = (self.btn_back.rect.left if self.focused
+                 else self._plan_rect.right - ctx.u(t.pad) * 2 - self._hint_width(ctx))
+        size = ctx.font_px(t.size_micro)
+        blit_text(surface, ctx.book,
+                  truncate(ctx.book, "  ·  ".join(p for p in parts if p), size,
+                           max(limit - left - ctx.u(t.pad), 0), mono=True),
+                  size, t.inop, (left, self._plan_rect.top + ctx.u(t.pad)),
+                  anchor="topleft", mono=True)
+        if not self.focused:
+            # top right: the bottom edge is spoken for by the scale bar and the
+            # zoom cluster, and the middle is where the drawing goes
+            blit_text(surface, ctx.book, self.HINT, ctx.font_px(t.size_micro), t.inop,
+                      (self._plan_rect.right - ctx.u(t.pad), self._plan_rect.top + ctx.u(t.pad)),
+                      anchor="topright", mono=True)
 
     def _draw_inspector(self, surface: pygame.Surface, ctx: UIContext, floor: Floor | None) -> None:
         t = ctx.theme
@@ -480,11 +665,14 @@ class PlanScreen(Screen):
 
         if not self._inspector:
             inner = panel.inner(ctx)
+            # in focus mode the only empty selection left is a room nobody has
+            # pinned a device into
+            prompt = "NO DEVICES HERE"
             prompt_px = ctx.font_px(t.size_small)
-            if ctx.book.font(prompt_px, mono=True).size("TAP A ROOM OR DEVICE")[0] > inner.width:
+            if ctx.book.font(prompt_px, mono=True).size(prompt)[0] > inner.width:
                 prompt_px = ctx.font_px(t.size_micro)
             blit_text(surface, ctx.book,
-                      truncate(ctx.book, "TAP A ROOM OR DEVICE", prompt_px, inner.width, mono=True),
+                      truncate(ctx.book, prompt, prompt_px, inner.width, mono=True),
                       prompt_px, t.inop, (inner.centerx, inner.centery), anchor="center", mono=True)
             # pointer/keyboard hints are noise on the touch panel, and there is
             # no room for them there anyway

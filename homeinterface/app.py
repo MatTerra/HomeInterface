@@ -20,16 +20,24 @@ from . import draw as vd
 from . import fbdev
 from .backend import Backend, Link, build_backend
 from .config import load_config, resolve_path
+from .dashboard import DashboardError, DashboardScreen, load_dashboard
 from .floorplan import FloorPlan, PlanError, load_plan
 from .fonts import FontBook, blit_text
 from .scaling import Box, Viewport
 from .screens import OverviewScreen, PlanScreen, Screen, SystemsScreen
+from .screens.alt import AltHomeScreen, AltVitalsScreen
 from .theme import Theme, mix
 from .ui.base import UIContext
 from .ui.controls import Button
 from .ui.indicators import Clock, MessageStrip
 
 SCREEN_TYPES = [PlanScreen, OverviewScreen, SystemsScreen]
+#: the alternative shell (``--alternative``): drill-down navigation instead of
+#: the scale drawing, and a bottom tab bar instead of the side rail. Same
+#: screen keys, so ``start_screen`` and the number shortcuts still work.
+ALT_SCREEN_TYPES = [AltHomeScreen, AltVitalsScreen, SystemsScreen]
+#: the shells a config may ask for; ``custom`` reads its screens from a file
+SHELLS = ("stock", "alt", "custom")
 
 # Design-unit sizes of the persistent chrome - i.e. pixels on the 480x320
 # reference panel.  The rail is sized so its buttons clear the theme's touch
@@ -41,6 +49,13 @@ FOOTER_H = 26.0
 MIN_TITLE_PX = 26
 MIN_RAIL_PX = 44
 MIN_FOOTER_PX = 20
+
+# Alternative shell: the nav lives in a bottom bar, and the title bar gives up
+# its second line - on a 320px panel the rail costs 12% of the width and the
+# tall title another 9% of the height, both of which the content wants back.
+ALT_TITLE_H = 24.0
+ALT_TABS_H = 46.0
+MIN_ALT_TABS_PX = 40
 
 
 class App:
@@ -58,6 +73,9 @@ class App:
         self.screen_index = 0
         self.screens: list[Screen] = []
         self._fullscreen = bool(self.config["display"].get("fullscreen", False))
+        #: which whole set of screens runs: stock | alt | custom
+        self.shell = self._shell()
+        self.dashboard = self._load_dashboard() if self.shell == "custom" else None
         self._show_fps = False
         self.surface: pygame.Surface | None = None
         # set only when we are painting an SPI panel instead of a window
@@ -71,6 +89,45 @@ class App:
         self._last_blink: bool | None = None
 
     # -- setup -----------------------------------------------------------
+    def _shell(self) -> str:
+        ui = self.config.get("ui") or {}
+        shell = str(ui.get("shell", "stock")).lower()
+        if shell not in SHELLS:
+            raise ValueError(f"ui.shell must be {' | '.join(SHELLS)}, got {shell!r}")
+        return shell
+
+    @property
+    def alternative(self) -> bool:
+        """True for the drill-down shell; kept because the chrome differs."""
+        return self.shell == "alt"
+
+    def _load_dashboard(self):
+        path = resolve_path(self.config, self.config.get("dashboard"))
+        if path is None:
+            raise DashboardError("ui.shell is custom but no dashboard: is configured")
+        return load_dashboard(path)
+
+    def reload_dashboard(self) -> bool:
+        """Re-read the dashboard file, keeping the old one if it will not load.
+
+        The panel has no keyboard and this is how a dashboard is edited in
+        practice (SIGHUP over ssh), so a typo must never leave a black screen:
+        the running tree stays up and the error goes to the message strip.
+        """
+        if self.shell != "custom":
+            return False
+        try:
+            dashboard = self._load_dashboard()
+        except DashboardError as exc:
+            print(f"[dashboard] {exc}")
+            self.backend.raise_alert("dashboard.reload", f"DASHBOARD {exc}", "caution")
+            return False
+        self.dashboard = dashboard
+        self.backend.clear_alert("dashboard.reload")
+        self._build_screens()
+        self.request_redraw()
+        return True
+
     def _load_plan(self) -> FloorPlan:
         path = resolve_path(self.config, self.config.get("plan"))
         if path is None or not Path(path).exists():
@@ -180,7 +237,18 @@ class App:
         self.request_redraw()
 
     def _build_screens(self) -> None:
-        self.screens = [cls(self) for cls in SCREEN_TYPES]
+        self.clock_widget = Clock()
+        self.footer_messages = MessageStrip(max_lines=3)
+        if self.shell == "custom":
+            # one tree, no screen list: the dashboard owns its own navigation
+            # (docs/adr/0003), so the shell has no rail and no tab bar to draw
+            assert self.dashboard is not None
+            self.screens = [DashboardScreen(self, self.dashboard)]
+            self.screen_index = 0
+            self.nav = []
+            return
+        types = ALT_SCREEN_TYPES if self.alternative else SCREEN_TYPES
+        self.screens = [cls(self) for cls in types]
         start = str(self.config.get("start_screen", "plan"))
         self.screen_index = next((i for i, s in enumerate(self.screens) if s.key == start), 0)
         self.nav = [
@@ -188,8 +256,6 @@ class App:
             Button(screen.title, (lambda i=i: self.show(i)), compact=True, sub=str(i + 1))
             for i, screen in enumerate(self.screens)
         ]
-        self.clock_widget = Clock()
-        self.footer_messages = MessageStrip(max_lines=3)
 
     @property
     def screen(self) -> Screen:
@@ -229,7 +295,7 @@ class App:
     def _regions(self, ctx: UIContext) -> tuple[pygame.Rect, pygame.Rect, pygame.Rect, pygame.Rect]:
         gap = ctx.u(self.theme.gap)
         pad = ctx.u(self.theme.pad)
-        title_h = max(ctx.u(TITLE_H), MIN_TITLE_PX)
+        title_h = max(ctx.u(ALT_TITLE_H if self.alternative else TITLE_H), MIN_TITLE_PX)
         rail_w = max(ctx.u(RAIL_W), MIN_RAIL_PX)
         full = Box(self.vp.rect).pad(pad)
         title, rest = full.rows(title_h, full.rect.height - title_h - gap, gap=gap)
@@ -244,12 +310,25 @@ class App:
             body = rest
             footer_rect = pygame.Rect(rest.rect.left, rest.rect.bottom, rest.rect.width, 0)
 
+        if self.shell == "custom":
+            # the whole body is the dashboard's; its tabs are a node in the
+            # tree, not chrome the shell draws around it
+            empty = pygame.Rect(body.rect.left, body.rect.top, 0, 0)
+            return title.rect, empty, body.rect, footer_rect
+
+        if self.alternative:
+            # the nav bar is a row along the bottom, under everything else
+            tabs_h = max(ctx.u(ALT_TABS_H), MIN_ALT_TABS_PX)
+            content, tabs = body.rows(body.rect.height - tabs_h - gap, tabs_h, gap=gap)
+            return title.rect, tabs.rect, content.rect, footer_rect
+
         rail, content = body.cols(rail_w, body.rect.width - rail_w - gap, gap=gap)
         return title.rect, rail.rect, content.rect, footer_rect
 
     # -- loop ------------------------------------------------------------
     def run(self) -> int:
         self._open_output()
+        self._install_reload_signal()
         self._build_screens()
         self.backend.start()
         clock = pygame.time.Clock()
@@ -265,6 +344,12 @@ class App:
             self._close_output()
             pygame.quit()
         return 0
+
+    def _install_reload_signal(self) -> None:
+        """SIGHUP re-reads the dashboard: the panel has no keyboard to press F5 on."""
+        if self.shell != "custom" or not hasattr(signal, "SIGHUP"):
+            return
+        signal.signal(signal.SIGHUP, lambda *_: self.reload_dashboard())
 
     def tick(self) -> None:
         """One frame: lay out, drain input, draw and present if anything moved.
@@ -331,6 +416,22 @@ class App:
 
     def _layout_chrome(self, rail: pygame.Rect, title: pygame.Rect, footer: pygame.Rect, ctx: UIContext) -> None:
         gap = ctx.u(self.theme.gap)
+        if not self.nav:
+            self.clock_widget.layout(title)
+            if footer.height > 0:
+                self.footer_messages.layout(Box(footer).pad(ctx.u(self.theme.pad), ctx.u(4)).rect)
+            return
+        if self.alternative:
+            # one wide tab per screen, filling the bar: the whole bottom edge
+            # is nav, which is the easiest thing on a panel to hit blind
+            for button, cell in zip(self.nav, Box(rail).cols(*[1.0] * len(self.nav), gap=gap)):
+                button.layout(cell.rect)
+            self.clock_widget.layout(title)
+            if footer.height > 0:
+                self.footer_messages.layout(
+                    Box(footer).pad(ctx.u(self.theme.pad), ctx.u(4)).rect
+                )
+            return
         cells = Box(rail).rows(*[1.0] * len(self.nav), gap=gap)
         # nav buttons are square-ish and top-aligned; the rail's tail stays empty
         button_h = min(ctx.u(96), cells[0].rect.height)
@@ -363,11 +464,20 @@ class App:
             if event.key == pygame.K_F3:
                 self._show_fps = not self._show_fps
                 return
+            if event.key == pygame.K_F5:
+                self.reload_dashboard()
+                return
             if event.key == pygame.K_TAB:
-                self.show((self.screen_index + 1) % len(self.screens))
+                if isinstance(self.screen, DashboardScreen):
+                    self.screen.cycle()
+                else:
+                    self.show((self.screen_index + 1) % len(self.screens))
                 return
             if pygame.K_1 <= event.key <= pygame.K_9:
-                self.show(event.key - pygame.K_1)
+                if isinstance(self.screen, DashboardScreen):
+                    self.screen.cycle_to(event.key - pygame.K_1)
+                else:
+                    self.show(event.key - pygame.K_1)
                 return
         for button in self.nav:
             if button.handle(event, ctx):
@@ -487,6 +597,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--width", type=int)
     parser.add_argument("--height", type=int)
     parser.add_argument("--fullscreen", action="store_true")
+    parser.add_argument("--alternative", action="store_true",
+                        help="alternative small-screen shell: drill-down lists, bottom tab bar")
+    parser.add_argument("--custom", nargs="?", const=True, metavar="DASHBOARD",
+                        help="custom shell: the screens declared in a dashboard file")
     parser.add_argument("--density", type=float, help="UI scale multiplier (touch panels: 1.2-1.5)")
     parser.add_argument("--driver", choices=["auto", "window", "fbdev"],
                         help="output path: SDL window, or mmap'd SPI framebuffer")
@@ -505,5 +619,17 @@ def main(argv: list[str] | None = None) -> int:
             config["display"][key] = value
     if args.fullscreen:
         config["display"]["fullscreen"] = True
+    if args.alternative:
+        config["ui"] = {**(config.get("ui") or {}), "shell": "alt"}
+    if args.custom:
+        config["ui"] = {**(config.get("ui") or {}), "shell": "custom"}
+        if isinstance(args.custom, str):
+            config["dashboard"] = args.custom
 
-    return App(config).run()
+    try:
+        return App(config).run()
+    except DashboardError as exc:
+        # a dashboard that cannot be trusted is not started: a panel showing
+        # half a screen is worse than one that says why it did not come up
+        print(f"[dashboard] {exc}")
+        return 2

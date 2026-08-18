@@ -46,6 +46,13 @@ DEFAULTS: dict[str, Any] = {
     "backend": {"kind": "mock", "chaos": True, "sync_registry": True},
     "theme": {},
     "overview": {},
+    # shell: which whole set of screens runs.
+    #   stock  - the scale drawing plus the side rail
+    #   alt    - the small-screen drill-down (--alternative)
+    #   custom - the screens declared in the dashboard file (--custom)
+    "ui": {"shell": "stock"},
+    # only read by the custom shell; --custom overrides it
+    "dashboard": "config/dashboard.yaml",
     "start_screen": "plan",
 }
 

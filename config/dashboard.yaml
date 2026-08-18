@@ -1,0 +1,111 @@
+# Dashboard for the custom shell:  python main.py --custom
+#
+# One tree, one root. A screen is six units across and three down; rows may be
+# asked for in halves, columns may not. A container that holds more than fits
+# gives up one of its own rows to a pager.
+#
+# Reload without restarting:  kill -HUP <pid>   (F5 in the dev window)
+
+start: home
+
+root:
+  type: tabs
+  bar: bottom
+  children:
+
+    # -- HOME: places -> place -> device, the drill-down as a tab-less stack
+    - type: tabs
+      bar: none
+      title: HOME
+      children:
+
+        - type: rows
+          id: home
+          children:
+            - type: places
+              columns: 6
+              rows: 2.5
+              on_press: {goto: place, params: {room: $room}}
+
+        - type: rows
+          id: place
+          children:
+            - type: cols
+              columns: 6
+              rows: 0.5
+              children:
+                - {type: button, label: "< BACK", columns: 1, rows: 0.5, on_press: back}
+                - {type: button, label: ALL OFF, columns: 2, rows: 0.5,
+                   on_press: {call: light.turn_off, data: {entity_id: all}}}
+                - {type: spacer, columns: 3, rows: 0.5}
+            - type: device-rows
+              # a place is a zone or a lone room: the empty field matches
+              # everything, the set one does the work
+              room: $room
+              zone: $zone
+              columns: 6
+              rows: 2
+              on_press: {goto: device, params: {device: $entity}}
+
+        - type: rows
+          id: device
+          children:
+            - type: cols
+              columns: 6
+              rows: 0.5
+              children:
+                - {type: button, label: "< BACK", columns: 1, rows: 0.5, on_press: back}
+                - {type: readout, entity: $device, columns: 5, rows: 0.5,
+                   label: "{name}", value: "{state}"}
+            - {type: toggle, entity: $device, columns: 6, rows: 1}
+            - {type: slider, entity: $device, columns: 6, rows: 1, control: brightness}
+
+    # -- VITALS: the house at a glance
+    - type: grid
+      id: vitals
+      title: VITALS
+      children:
+        - {type: arc-gauge, entity: sensor.house_power, columns: 2, rows: 1.5,
+           label: POWER, unit: W, max: 8000}
+        - {type: arc-gauge, entity: sensor.outdoor_temperature, columns: 2, rows: 1.5,
+           label: OUTSIDE, unit: "°C", min: -5, max: 45}
+        - type: rows
+          columns: 2
+          rows: 1.5
+          children:
+            - {type: bar-gauge, entity: sensor.water_pressure, columns: 2, rows: 0.5,
+               label: WATER, unit: bar, max: 6}
+            - {type: bar-gauge, entity: sensor.outdoor_humidity, columns: 2, rows: 0.5,
+               label: HUMIDITY, unit: "%", max: 100}
+        - type: cols
+          columns: 6
+          rows: 1
+          children:
+            # colour is data: the level map decides, not a component
+            - type: lamp
+              entity: binary_sensor.porta_frente
+              columns: 2
+              rows: 1
+              label: FRONT DOOR
+              levels:
+                - {state: "on", level: caution}
+                - {level: normal}
+            - type: lamp
+              entity: binary_sensor.janela_quarto2
+              columns: 2
+              rows: 1
+              label: WINDOW Q2
+              levels:
+                - {state: "on", level: caution}
+                - {level: normal}
+            - {type: messages, columns: 2, rows: 1, lines: 3}
+
+    # -- PLAN: the scale drawing, tap a room to command it
+    - type: rows
+      id: plan
+      title: PLAN
+      children:
+        - type: floorplan
+          columns: 6
+          rows: 2.5
+          on_press: {goto: place, params: {room: $room}}

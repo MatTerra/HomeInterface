@@ -51,6 +51,9 @@ in reach — useful for development, demos and screenshots.
                         output path: SDL window, or an mmap'd SPI framebuffer
 --fbdev PATH           framebuffer device (default: probe /dev/fb1, /dev/fb0)
 --touch SPEC           touch device: auto | none | /dev/input/eventN
+--alternative          alternative small-screen shell (see below)
+--custom [DASHBOARD]   custom shell: the screens declared in a dashboard file
+                        (default: config/dashboard.yaml)
 ```
 
 Global keyboard/mouse map:
@@ -63,6 +66,7 @@ Global keyboard/mouse map:
 | `F11`                | Toggle fullscreen                     |
 | `F12`                | Save a screenshot to `screenshots/`   |
 | `F3`                 | Toggle the FPS/resolution readout     |
+| `F5`                 | Reload the dashboard (`--custom` only)|
 
 On the plan screen specifically:
 
@@ -83,6 +87,144 @@ makes a lavatory or a corridor a small target; `GRID` replaces it with one
 card per place - zones counted once, like the drawing names them - each an
 equal touch target showing how many of its devices are on. Both lead into the
 same focus stage, so the choice is only about finding the place.
+
+## The alternative shell (`--alternative`)
+
+`python main.py --alternative` (or `ui: {shell: alt}` in `app.yaml`)
+starts a second, independent set of screens. Nothing of the stock interface
+changes: the flag only picks `ALT_SCREEN_TYPES` instead of `SCREEN_TYPES` and
+moves the nav from the side rail to a bottom bar.
+
+Why it exists: on 480x320 the drawing is the bottleneck. A storey drawn to
+scale gives a lavatory a target a couple of millimetres wide, the inspector
+column ends up narrower than a slider, and the side rail plus the two-line
+title bar eat about a fifth of the panel before any content is drawn.
+
+What the alternative does instead:
+
+* **No drawing, no gestures.** Places are cards, devices are rows. There is
+  no pan, no zoom and no scrolling (this panel is resistive); what does not
+  fit goes on a page you turn with two half-width buttons.
+* **Drill-down, one stage at a time.** `places -> place -> device`, with a
+  single `< BACK` button in a fixed spot. Each stage owns the whole content
+  rectangle.
+* **The common command never drills in.** Every place card carries a power
+  chip that toggles the whole zone/room from the home screen.
+* **Chrome shrinks.** Title bar 24 design units instead of 30, no side rail,
+  and a full-width bottom tab bar - the easiest thing on a panel to hit
+  without looking.
+* **Rows grow into the spare space** rather than leaving a remainder at the
+  bottom, so targets are as large as the page allows.
+* **A grid when the width pays for it.** Device rows go up to three columns
+  and place cards up to two (a card also carries a power chip and a count).
+  The rule is measured both in design units and in real pixels, since design
+  units shrink with the panel; a row whose state no longer fits beside its
+  name stacks the two instead of truncating the name away.
+
+Same functionality, same backend calls: floors, zones (with the ZONE/room
+scope chips), group master toggle, group brightness/target, per-device
+toggle and brightness/temperature/cover position, vitals, quick controls,
+annunciators, and the unchanged systems register. `VITALS` splits into three
+full-screen sections (`VITALS | QUICK | STATUS`) instead of three columns.
+
+Screens live in `homeinterface/screens/alt.py`; `start_screen` and the `1`-`9`
+shortcuts work as before, because the alternative screens reuse the same
+`key`s (`plan`, `overview`, `systems`).
+
+## The custom shell (`--custom`)
+
+`python main.py --custom` (or `ui: {shell: custom}` in `app.yaml`) runs a
+third shell whose screens are not written in Python at all: they are declared
+in `config/dashboard.yaml`. The stock and alt shells are untouched.
+
+### One tree, no screen list
+
+A dashboard file is one `root:` node. Containers hold nodes, components draw.
+A tab bar is an ordinary container - not chrome - so a dashboard that wants
+one declares it, and a dashboard that does not, does not have one. Any node
+may carry an `id:`, and `id` is what navigation targets. `start:` names the id
+that opens first. The title bar and the alert footer stay chrome.
+
+### The grid
+
+A screen is **six units across and three down** (twelve by six cells
+internally). Spans are written per child, Home Assistant style:
+
+```yaml
+- {type: toggle, entity: light.sala, columns: 6, rows: 1}
+```
+
+Rows may be asked for in halves; columns may not. Half a unit is 37.6 design
+units tall, which clears a device row, but only 38.8 wide, which does not
+clear the 40-unit touch minimum. Leave a span out and the container decides:
+a `rows:` child stretches across, a `cols:` child takes an equal share, a
+`grid:` child is one unit. See `docs/adr/0001`.
+
+A container that holds more than fits gives up one of its own rows to a
+pager (`< / >`, scrollbar-like) - that is `overflow: auto`, the default. Set
+`overflow: clip` and it shows what fits plus a `+N MORE` count instead.
+
+### Containers and components
+
+| Containers | |
+|---|---|
+| `rows` | one child per line |
+| `cols` | children side by side |
+| `grid` | row-major flow |
+| `chips` | `cols` with compact children |
+| `tabs` | one pane at a time; `bar: top \| bottom \| none` |
+
+| Components | |
+|---|---|
+| `floorplan` | the scale drawing; a tap reports its room |
+| `places` | every zone and lone room as a card, power chip on each |
+| `device-rows` | the devices a selector picks out, one row each |
+| `toggle` `slider` `button` `tile` | controls |
+| `readout` `arc-gauge` `bar-gauge` `lamp` `messages` `clock` `panel` | indicators |
+
+### Data, without a template language
+
+There is no Jinja and no expression language (`docs/adr/0002`). Four narrow
+mechanisms cover the ground:
+
+* **Binding** - `entity:` on a component. Its properties are what that
+  component's placeholders read. `entity: {id: ..., precision: 1, unit: "°C"}`
+  carries the formatting.
+* **Placeholder** - `{state}`, `{name}`, `{attributes.brightness}` read the
+  node's own entity; `{sensor.outdoor_temperature.state}` names another one
+  outright. Lookups only: no arithmetic, no filters, no calls.
+* **Repeat** - `from:` a selector (`room`/`zone`/`floor`/`kind`, AND-ed) plus
+  a `template:` child, stamped once per match with `$entity` bound.
+* **Condition** - `visible_if:` takes one predicate (`state`, `above`,
+  `below`, `exists`). Nesting supplies AND; there is no `or`.
+* **Level map** - `levels:` pairs predicates with theme roles, first match
+  wins, the rule with no condition is the fallback and comes last. This is
+  how "amber when the door is open" is said:
+
+```yaml
+- type: lamp
+  entity: binary_sensor.porta_frente
+  label: FRONT DOOR
+  levels:
+    - {state: "on", level: caution}
+    - {level: normal}
+```
+
+### Actions
+
+`on_press:` takes `toggle`, `back`, `none`, `{goto: <id>, params: {...}}` or
+`{call: light.turn_off, data: {...}}`. Params are `$name` values that the
+target pane's selectors and placeholders can then read.
+
+### When it goes wrong
+
+Structure is validated at load: an unknown `type:`, a bad span, a dangling
+`goto` or a duplicate `id` refuses to boot, naming the file and line. A
+missing entity at runtime draws as `inop` rather than crashing.
+
+Reload without restarting: **SIGHUP** (`kill -HUP <pid>`) on the panel, `F5`
+in the dev window. A dashboard that fails to reload leaves the running one up
+and reports the error in the message strip - the panel never goes black.
 
 ## Running on the SPI panel
 
@@ -305,9 +447,16 @@ homeinterface/
     base.py                  Widget/Pressable/WidgetGroup, UIContext
     controls.py                Button, Slider, ToggleButton, TabStrip
     indicators.py               Panel, ArcGauge, BarGauge, Readout, StatusLamp, EntityTile
+  dashboard/
+    schema.py                Node/Span/Binding/Predicate/Repeat/Action + validation
+    loader.py                  dashboard.yaml -> node tree, errors with file:line
+    registry.py                 the type: table; built-ins go through it too
+    components.py                one builder per type:, plus places/device-rows/floorplan
+    build.py                      layout engine + DashboardScreen (the custom shell)
   screens/
     base.py                  Screen contract (layout/draw/handle/lifecycle)
     plan.py                    floor plan + device inspector (primary page)
+    alt.py                      --alternative shell: drill-down places/devices
     overview.py                 ECAM-style vitals: gauges, quick controls, annunciators
     systems.py                   entity register + link diagnostics
 ```

@@ -11,7 +11,8 @@ WorkingDirectory=/home/mateus/HomeInterface
 # real house, while app.yaml keeps shipping the example plan for development.
 ExecStart=/home/mateus/HomeInterface/.venv/bin/python main.py \
     --driver fbdev \
-    --plan config/floorplan.yaml
+    --plan config/floorplan.yaml \
+    --alternative
 Restart=always
 RestartSec=5
 # Home Assistant credentials, if backend.kind is homeassistant

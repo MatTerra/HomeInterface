@@ -5,21 +5,54 @@ Architectural decisions live in `docs/adr/`.
 
 ## Spatial model
 
+**Floor plan** — the whole drawing of one house: every floor, and everything
+on them. It is shared as a document and is deliberately ignorant of both the
+renderer and Home Assistant, so the same drawing renders identically against
+someone else's entities.
+
 **Floor** — one level of the house (térreo, superior). Owns rooms, walls,
 openings and devices. Floors share one coordinate system so they stay aligned
 when flipped between.
 
 **Room** — one enclosure on a floor, with a polygon. Any enclosure, not only a
-bedroom: sala, garagem and varanda are all rooms.
+bedroom: sala, garagem and varanda are all rooms. A room always has geometry:
+a place with no shape is not a room. An outdoor area is a floor of its own,
+and "the whole house" is not a room at all.
 
 **Zone** — a named grouping of rooms, possibly spanning floors. A zone owns no
 geometry of its own; its members keep their polygons, areas and devices.
+
+> Not Home Assistant's *zone*. There, a zone is a geographic region used for
+> presence ("home", "work"); it has nothing to do with this one. See
+> **Home Assistant vocabulary** below for what our terms map onto.
 
 **Place** — one unit of control on the drill-down shell: either a zone, or a
 room that belongs to no zone. The set of places is what the operator picks
 from before commanding anything.
 
-**Device** — an entity positioned on the plan, belonging to a room.
+**Device** — a pin on the drawing: a position in a room, naming an entity.
+A device is drawing, not state - it says *where* something is, never what it
+is doing. What it is doing belongs to the **entity** it names.
+
+## Home Assistant vocabulary
+
+**Entity** — one controllable or observable thing as the backend reports it:
+live state, read as an immutable snapshot. Two things share the name of an
+entity: the **device** that pins it to a spot on the drawing, and the entity
+itself. They are never the same thing.
+
+**Area** (Home Assistant) — what a **zone** maps onto, by name.
+
+**Label** (Home Assistant) — what a **room** maps onto, by name. Rooms are
+labels and zones are areas, not the other way around.
+
+**Link** — the state of the connection to the backend: offline, connecting,
+online or degraded. It says whether what is on screen can be trusted, and
+nothing about the house.
+
+**Alert** — one line on the message strip: something the operator is being
+told. Link and alert are separate channels. A link state is not an alert and
+does not become one; an alert is not evidence about the connection.
 
 ## Presentation
 

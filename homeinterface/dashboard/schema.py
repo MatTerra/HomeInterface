@@ -34,7 +34,11 @@ COLUMN_STEP = 1.0
 PREDICATE_KINDS = ("state", "above", "below", "exists")
 #: Theme roles a level map may name; the theme resolves these to colours.
 LEVELS = ("normal", "ok", "on", "info", "caution", "warning", "inop", "off")
-ACTION_KINDS = ("toggle", "goto", "back", "call", "none")
+ACTION_KINDS = ("toggle", "goto", "back", "call", "set", "none")
+#: What a repeat's ``over:`` may enumerate. ``devices``/``places`` come from
+#: the plan by selector; ``floors``/``rooms`` likewise; ``entities`` is the
+#: odd one out - it reads the backend's own snapshot, not the plan.
+REPEAT_OVER = ("devices", "places", "floors", "rooms", "entities")
 #: What a container does when it holds more than fits: turn pages, or clip.
 OVERFLOW_MODES = ("auto", "clip")
 #: A container needs a second row before it can give one up to a pager.
@@ -167,12 +171,22 @@ class Selector:
 
 @dataclass(frozen=True)
 class Repeat:
-    """One child per match: a selector over the plan and the shape to stamp."""
+    """One child per match, and the shape to stamp for each.
+
+    ``selector`` is what ``devices``/``places``/``floors``/``rooms`` enumerate
+    over the plan.  ``entities``/``domain`` are the alternative source for
+    ``over: entities``, which reads the backend's snapshot instead of the
+    plan - a literal id list, or every entity of one HA domain.  Exactly one
+    of them is set when ``over`` is ``"entities"``; both are None otherwise.
+    """
 
     selector: Selector
     template: "Node"
-    #: what the selector enumerates: devices, or places (zones + lone rooms)
+    #: what is enumerated: devices, places (zones + lone rooms), floors,
+    #: rooms, or entities (see REPEAT_OVER)
     over: str = "devices"
+    entities: tuple[str, ...] | None = None
+    domain: str | None = None
 
 
 @dataclass(frozen=True)
@@ -193,6 +207,8 @@ class Action:
             )
         if self.kind == "goto" and not self.target:
             raise DashboardError("goto needs the id of a node to go to", source=source, line=line)
+        if self.kind == "set" and not self.target:
+            raise DashboardError("set needs the name of a param to write", source=source, line=line)
         if self.kind == "call" and (not self.service or "." not in str(self.service)):
             raise DashboardError(f"call needs a domain.service, got {self.service!r}",
                                  source=source, line=line)
@@ -213,6 +229,12 @@ class Node:
     repeat: Repeat | None = None
     overflow: str = "auto"
     action: Action | None = None
+    #: a second, distinct action a node may fire - today only ``floorplan``
+    #: uses this, for a device tap while focused (``on_select:``), kept apart
+    #: from ``action`` (``on_press:``) because the two mean different things
+    #: at the same time: one enters a pane, the other selects in place
+    #: (docs/adr/0006)
+    select_action: Action | None = None
     #: True when the author wrote columns:/rows: - an implicit span is filled
     #: in by the container, which knows whether a child should stretch
     has_span: bool = False
@@ -276,10 +298,10 @@ def validate(dashboard: Dashboard, known_types: set[str], containers: set[str]) 
     _check(dashboard.root, ROOT_COLUMNS, ROOT_ROWS, known_types, containers, seen, source)
 
     for node in dashboard.root.walk():
-        action = node.action
-        if action is not None and action.kind == "goto" and action.target not in seen:
-            raise DashboardError(f"goto {action.target!r} names no node in this dashboard",
-                                 source=source, line=node.line)
+        for action in (node.action, node.select_action):
+            if action is not None and action.kind == "goto" and action.target not in seen:
+                raise DashboardError(f"goto {action.target!r} names no node in this dashboard",
+                                     source=source, line=node.line)
     if dashboard.start and dashboard.start not in seen:
         raise DashboardError(f"start {dashboard.start!r} names no node in this dashboard",
                              source=source)
@@ -309,6 +331,8 @@ def _check(node: Node, columns: float, rows: float, known_types: set[str],
     _validate_levels(node, source)
     if node.action is not None:
         node.action.validate(source=source, line=node.line)
+    if node.select_action is not None:
+        node.select_action.validate(source=source, line=node.line)
     if node.id:
         if node.id in seen:
             raise DashboardError(f"duplicate id {node.id!r}", source=source, line=node.line)

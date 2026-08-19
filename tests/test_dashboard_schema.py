@@ -103,6 +103,27 @@ root:
 """)
 
 
+def test_set_action_parses_a_target_and_value():
+    dashboard = load("""
+root:
+  type: floorplan
+  on_select: {set: device, value: $entity}
+""")
+    action = dashboard.root.select_action
+    assert action.kind == "set"
+    assert action.target == "device"
+    assert action.params == {"value": "$entity"}
+
+
+def test_set_needs_a_target():
+    with pytest.raises(DashboardError, match="set needs the name of a param"):
+        load("""
+root:
+  type: button
+  on_press: {set: "", value: $entity}
+""")
+
+
 def test_a_start_that_names_nothing_is_refused():
     with pytest.raises(DashboardError, match="start 'nowhere'"):
         load("start: nowhere\n" + MINIMAL)
@@ -170,6 +191,78 @@ def test_a_selector_matches_places_not_arbitrary_keys():
 root:
   type: rows
   from: {colour: blue}
+  template: {type: toggle}
+""")
+
+
+# -- repeat sources --------------------------------------------------------
+def test_over_accepts_floors_and_rooms():
+    for over in ("floors", "rooms"):
+        dashboard = load(f"""
+root:
+  type: rows
+  over: {over}
+  from: {{}}
+  template: {{type: toggle}}
+""")
+        assert dashboard.root.repeat.over == over
+
+
+def test_over_refuses_an_unknown_value():
+    with pytest.raises(DashboardError, match="over: must be one of"):
+        load("""
+root:
+  type: rows
+  over: rooftops
+  from: {}
+  template: {type: toggle}
+""")
+
+
+def test_over_entities_accepts_a_literal_list():
+    dashboard = load("""
+root:
+  type: rows
+  over: entities
+  from: {entities: [light.a, light.b]}
+  template: {type: toggle, entity: $entity}
+""")
+    repeat = dashboard.root.repeat
+    assert repeat.entities == ("light.a", "light.b")
+    assert repeat.domain is None
+
+
+def test_over_entities_accepts_a_domain_selector():
+    dashboard = load("""
+root:
+  type: rows
+  over: entities
+  from: {domain: sensor}
+  template: {type: toggle, entity: $entity}
+""")
+    repeat = dashboard.root.repeat
+    assert repeat.domain == "sensor"
+    assert repeat.entities is None
+
+
+def test_over_entities_needs_a_source():
+    with pytest.raises(DashboardError, match="needs an entities: list or a domain:"):
+        load("""
+root:
+  type: rows
+  over: entities
+  from: {}
+  template: {type: toggle}
+""")
+
+
+def test_entities_list_must_be_a_list_of_strings():
+    with pytest.raises(DashboardError, match="entities: must be a list of entity ids"):
+        load("""
+root:
+  type: rows
+  over: entities
+  from: {entities: [1, 2]}
   template: {type: toggle}
 """)
 

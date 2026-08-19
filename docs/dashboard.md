@@ -48,15 +48,72 @@ pager (`< / >`, scrollbar-like) - that is `overflow: auto`, the default. Set
 | `cols` | children side by side |
 | `grid` | row-major flow |
 | `chips` | `cols` with compact children |
-| `tabs` | one pane at a time; `bar: top \| bottom \| none` |
+| `tabs` | one pane at a time; `bar: top \| bottom \| left \| right \| none` |
 
 | Components | |
 |---|---|
-| `floorplan` | the scale drawing; a tap reports its room |
+| `floorplan` | the scale drawing; zoom/pan and a `focus:` stage, see below |
 | `places` | every zone and lone room as a card, power chip on each |
 | `device-rows` | the devices a selector picks out, one row each |
+| `device-inspector` | one entity: a toggle plus a kind-specific slider |
+| `zone-inspector` | a zone's (or room's) master toggle plus group sliders |
 | `toggle` `slider` `button` `tile` | controls |
-| `readout` `arc-gauge` `bar-gauge` `lamp` `messages` `clock` `panel` | indicators |
+| `readout` `arc-gauge` `bar-gauge` `lamp` `messages` `clock` `panel` `label` | indicators |
+| `attr-list` | one entity's attributes, whichever of a fixed key list exist |
+| `link-status` | backend connection diagnostics - link state, counts, revision |
+
+### `floorplan`: focus, and selecting a device (`docs/adr/0006`)
+
+`floorplan` has two stages. With no `focus:` it draws the whole floor and a
+tap on a room fires `on_press:` (usually a `goto` into a focus pane, with
+`room:`/`zone:` params). With `focus: $room` or `focus: $zone` it fills the
+rect with just that room (or that zone's rooms), grows the markers, and a tap
+on a device fires a *different* action, `on_select:` - kept apart from
+`on_press:` because the two mean different things at the same moment: one
+navigates to a new pane, the other selects in place. Zoom (wheel, or the
++/-/FIT buttons) and pan (right-drag) work in both stages.
+
+`on_select:` takes the same shapes as `on_press:`, plus one new kind, `set`:
+`{set: <param-name>, value: <template>}` writes one value into the *current*
+pane's `$name` scope without navigating - no history entry, no `goto`. A
+dashboard that wants stock's plan-screen parity puts `device-inspector` and
+`zone-inspector` beside a `floorplan`, gated with `visible_if: {exists: true}`
+so each one only shows once something is selected:
+
+```yaml
+- type: floorplan
+  focus: $room
+  on_press: {goto: focus, params: {room: $room, zone: $zone}}
+  on_select: {set: device, value: $entity}
+- type: device-inspector
+  entity: $device
+  visible_if: {exists: true}
+- type: zone-inspector
+  zone: $zone
+  room: $room
+  visible_if: {exists: true}
+```
+
+`device-inspector` binds one entity the ordinary way (`entity:`) and shows a
+toggle plus a slider chosen from the entity id's domain: `light.*` gets
+brightness, `climate.*` gets temperature, `cover.*` gets position, anything
+else gets no slider. `zone-inspector` takes `zone:` and/or `room:` props
+(resolved the same way `focus:` is: tried as a zone id, then as a room's
+zone) and shows a master toggle plus group brightness/temperature sliders for
+whichever of those domains are present - it does not include stock's
+ZONE/ROOM scope switch or a device-tile list; build those from `device-rows`
+if a dashboard wants them.
+
+`toggle` and `slider` normally bind one `entity:`; given the `power-chip`
+selector shape instead (`entities:` a literal list, or `room:`/`zone:`/
+`floor:`/`kind:`) they command the whole group via the backend's group
+operations (`toggle_group`, `set_group_brightness`, `set_group_temperature`)
+and reflect its aggregate state, the way a zone's master toggle does in the
+stock shell.
+
+`label` is a non-interactive caption: `text:` for a literal string, or the
+same `entity:`/placeholder machinery every other component uses for a
+computed one (`text: "{state}"`).
 
 ### Data, without a template language
 
@@ -69,8 +126,15 @@ mechanisms cover the ground:
 * **Placeholder** - `{state}`, `{name}`, `{attributes.brightness}` read the
   node's own entity; `{sensor.outdoor_temperature.state}` names another one
   outright. Lookups only: no arithmetic, no filters, no calls.
-* **Repeat** - `from:` a selector (`room`/`zone`/`floor`/`kind`, AND-ed) plus
-  a `template:` child, stamped once per match with `$entity` bound.
+* **Repeat** - `from:` a selector plus a `template:` child, stamped once per
+  match. `over:` says what is enumerated: `devices` (default) or `places`
+  (zones + lone rooms) by a `room`/`zone`/`floor`/`kind` selector, AND-ed,
+  with `$entity`/`$room`/`$zone`/`$name` bound per item; `floors` (one per
+  `Floor`, `$floor`/`$name`) and `rooms` (one per `Room`, `$room`/`$name`/
+  `$zone`) by the same plan selector; or `entities`, which reads the
+  *backend's* live snapshot instead of the plan - either a literal id list
+  (`from: {entities: [light.a, light.b]}`) or every entity of one HA domain
+  (`from: {domain: sensor}`), both binding `$entity`.
 * **Condition** - `visible_if:` takes one predicate (`state`, `above`,
   `below`, `exists`). Nesting supplies AND; there is no `or`.
 * **Level map** - `levels:` pairs predicates with theme roles, first match
@@ -88,9 +152,13 @@ mechanisms cover the ground:
 
 ### Actions
 
-`on_press:` takes `toggle`, `back`, `none`, `{goto: <id>, params: {...}}` or
-`{call: light.turn_off, data: {...}}`. Params are `$name` values that the
-target pane's selectors and placeholders can then read.
+`on_press:` takes `toggle`, `back`, `none`, `{goto: <id>, params: {...}}`,
+`{call: light.turn_off, data: {...}}` or `{set: <param-name>, value: <template>}`.
+`goto` params are `$name` values the target pane's selectors and placeholders
+can then read. `set` is narrower: it copies one value into one param of the
+*current* pane without navigating - no new pane, no history entry, and no
+arithmetic or lookups beyond the usual `$name` substitution (`docs/adr/0006`).
+`floorplan` is the only component that fires `on_select:` today - see above.
 
 ### When it goes wrong
 

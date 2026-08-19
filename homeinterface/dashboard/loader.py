@@ -16,6 +16,7 @@ import yaml
 
 from .registry import CONTAINERS, known_types
 from .schema import (
+    REPEAT_OVER,
     ROOT_COLUMNS,
     ROOT_ROWS,
     Action,
@@ -36,7 +37,7 @@ from .schema import (
 RESERVED = {
     "type", "id", "columns", "rows", "entity", "precision", "unit",
     "visible_if", "levels", "from", "over", "template", "overflow",
-    "children", "on_press",
+    "children", "on_press", "on_select",
 }
 _LINE = "__line__"
 
@@ -128,6 +129,7 @@ def _node(data: Any, source: str | None, *, default_span: Span | None = None) ->
         repeat=_repeat(data, source, line),
         overflow=str(data.get("overflow", "auto")),
         action=_action(data.get("on_press"), source, line),
+        select_action=_action(data.get("on_select"), source, line),
         has_span=has_span or default_span is not None,
         line=line,
     )
@@ -205,10 +207,11 @@ def _repeat(data: dict[str, Any], source: str | None, line: int | None) -> Repea
     if not isinstance(raw, dict):
         raise DashboardError(f"from: must be a selector mapping, got {raw!r}",
                              source=source, line=line)
-    unknown = set(raw) - {"room", "zone", "floor", "kind", _LINE}
+    unknown = set(raw) - {"room", "zone", "floor", "kind", "entities", "domain", _LINE}
     if unknown:
         raise DashboardError(
-            f"a selector matches room, zone, floor or kind; got {', '.join(sorted(unknown))}",
+            f"a selector matches room, zone, floor or kind (or entities/domain for"
+            f" over: entities); got {', '.join(sorted(unknown))}",
             source=source, line=line,
         )
     template = data.get("template")
@@ -216,12 +219,34 @@ def _repeat(data: dict[str, Any], source: str | None, line: int | None) -> Repea
         raise DashboardError("from: needs a template: node to stamp out",
                              source=source, line=line)
     over = str(data.get("over", "devices"))
-    if over not in ("devices", "places"):
-        raise DashboardError(f"over: must be devices or places, got {over!r}",
-                             source=source, line=line)
+    if over not in REPEAT_OVER:
+        raise DashboardError(
+            f"over: must be one of {', '.join(REPEAT_OVER)}, got {over!r}",
+            source=source, line=line,
+        )
     selector = Selector(room=raw.get("room"), zone=raw.get("zone"),
                         floor=raw.get("floor"), kind=raw.get("kind"))
-    return Repeat(selector=selector, template=_node(template, source), over=over)
+    entities = _entity_list(raw.get("entities"), source, line)
+    domain = raw.get("domain")
+    if domain is not None and not isinstance(domain, str):
+        raise DashboardError(f"domain: must be a string, got {domain!r}",
+                             source=source, line=line)
+    if over == "entities" and not entities and not domain:
+        raise DashboardError(
+            "over: entities needs an entities: list or a domain: selector",
+            source=source, line=line,
+        )
+    return Repeat(selector=selector, template=_node(template, source), over=over,
+                  entities=entities, domain=domain)
+
+
+def _entity_list(raw: Any, source: str | None, line: int | None) -> tuple[str, ...] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, list) or not all(isinstance(e, str) for e in raw):
+        raise DashboardError(f"entities: must be a list of entity ids, got {raw!r}",
+                             source=source, line=line)
+    return tuple(raw)
 
 
 def _action(data: Any, source: str | None, line: int | None) -> Action | None:
@@ -248,5 +273,8 @@ def _action(data: Any, source: str | None, line: int | None) -> Action | None:
                       target=body.get("entity"), data=_strip(body.get("data") or {}))
     if "toggle" in body:
         return Action(kind="toggle", target=str(body["toggle"]))
-    raise DashboardError("on_press needs one of toggle, goto, call, back, none",
+    if "set" in body:
+        return Action(kind="set", target=str(body["set"]),
+                      params=_strip({"value": body.get("value", "")}))
+    raise DashboardError("on_press needs one of toggle, goto, call, set, back, none",
                          source=source, line=line)

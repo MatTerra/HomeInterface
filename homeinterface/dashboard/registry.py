@@ -23,7 +23,8 @@ CONTAINERS: tuple[str, ...] = ("grid", "rows", "cols", "tabs", "chips")
 COMPONENTS: tuple[str, ...] = (
     "floorplan", "places", "device-rows", "toggle", "slider", "tile", "readout",
     "arc-gauge", "bar-gauge", "lamp", "messages", "clock", "panel", "button",
-    "power-chip", "spacer",
+    "power-chip", "spacer", "label", "attr-list", "link-status",
+    "device-inspector", "zone-inspector",
 )
 
 #: name -> builder.  Filled by :mod:`.components` on import.

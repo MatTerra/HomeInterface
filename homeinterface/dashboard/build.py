@@ -25,7 +25,7 @@ from ..screens.base import Screen
 from ..ui.base import UIContext, Widget
 from ..ui.controls import Button
 from . import components as _components  # noqa: F401  (registers the built-ins)
-from .components import BuildContext, select_devices, select_places
+from .components import BuildContext, select_devices, select_floors, select_places, select_rooms
 from .registry import CONTAINERS, builder
 from .schema import (
     PAGER_MIN_ROWS,
@@ -96,6 +96,10 @@ class DashboardScreen(Screen):
         self.selected: dict[str, int] = {}
         #: container path -> page showing
         self.pages: dict[str, int] = {}
+        #: floorplan node path -> its zoom/pan, surviving a rebuild the same
+        #: way ``selected``/``pages`` do (a fresh FloorPlanView is built every
+        #: relayout, so its own instance attributes cannot hold this)
+        self.floorplan_view: dict[str, dict] = {}
         #: ``$name`` values a goto carried
         self.params: dict[str, str] = {}
         self._history: list[tuple[dict[str, int], dict[str, str]]] = []
@@ -182,6 +186,10 @@ class DashboardScreen(Screen):
         elif action.kind == "goto":
             params = {k: str(_expand(str(v), values)) for k, v in action.params.items()}
             self.goto(str(action.target), {**extra, **params})
+        elif action.kind == "set":
+            value = _expand(str(action.params.get("value", "")), values)
+            self.params[str(action.target)] = str(value) if value is not None else ""
+            self.invalidate()
         elif action.kind == "back":
             self.back()
         elif action.kind == "call":
@@ -216,16 +224,17 @@ class DashboardScreen(Screen):
         elif node.type in CONTAINERS:
             self._layout_container(node, rect, ctx, scope, path)
         else:
-            self._layout_component(node, rect, ctx, scope)
+            self._layout_component(node, rect, ctx, scope, path)
 
     def _layout_component(self, node: Node, rect: pygame.Rect, ctx: UIContext,
-                          scope: dict[str, str]) -> None:
+                          scope: dict[str, str], path: str) -> None:
         make = builder(node.type)
         if make is None:
             raise DashboardError(f"no builder for {node.type!r}", line=node.line)
         bc = BuildContext(
             ctx=ctx, plan=self.plan, scope=scope,
             run_action=lambda action, extra, s=scope: self.run_action(action, extra, s),
+            state=lambda p=path: self.floorplan_view.setdefault(p, {}),
         )
         widget = make(node, bc)
         widget.layout(rect)
@@ -245,14 +254,26 @@ class DashboardScreen(Screen):
             pane = panes[index]
             self._layout_node(pane.node, rect, ctx, {**scope, **pane.scope}, pane.key)
             return
-        bar_h = min(max(self._strip(TABS_ROWS, gap), MIN_TABS_PX), rect.height * 0.4)
         box = Box(rect)
-        if placement == "top":
-            bar, body = box.rows(bar_h, rect.height - bar_h - gap, gap=gap)
+        if placement in ("left", "right"):
+            # a side rail: the strip is a column of the container's width
+            # rather than a row of its height (mirrors screens/plan.py's
+            # FloorStrip, a vertical selector built the same way)
+            bar_w = min(max(self._strip(TABS_ROWS, gap), MIN_TABS_PX), rect.width * 0.4)
+            if placement == "left":
+                bar, body = box.cols(bar_w, rect.width - bar_w - gap, gap=gap)
+            else:
+                body, bar = box.cols(rect.width - bar_w - gap, bar_w, gap=gap)
+            cells = bar.rows(*[1.0] * len(panes), gap=gap)
         else:
-            body, bar = box.rows(rect.height - bar_h - gap, bar_h, gap=gap)
+            bar_h = min(max(self._strip(TABS_ROWS, gap), MIN_TABS_PX), rect.height * 0.4)
+            if placement == "top":
+                bar, body = box.rows(bar_h, rect.height - bar_h - gap, gap=gap)
+            else:
+                body, bar = box.rows(rect.height - bar_h - gap, bar_h, gap=gap)
+            cells = bar.cols(*[1.0] * len(panes), gap=gap)
 
-        for position, (cell, placed) in enumerate(zip(bar.cols(*[1.0] * len(panes), gap=gap), panes)):
+        for position, (cell, placed) in enumerate(zip(cells, panes)):
             label = str(placed.node.props.get("title") or placed.node.id or position + 1)
             tab = Button(label, (lambda p=path, i=position: self.select(p, i)), compact=True,
                          sub=str(position + 1))
@@ -345,7 +366,11 @@ class DashboardScreen(Screen):
 
     def _repeat_items(self, node: Node, scope: dict[str, str]) -> list[dict[str, str]]:
         repeat = node.repeat
-        if repeat is None or self.plan is None:
+        if repeat is None:
+            return []
+        if repeat.over == "entities":
+            return self._repeat_entities(repeat, scope)
+        if self.plan is None:
             return []
         selector = replace(
             repeat.selector,
@@ -358,9 +383,36 @@ class DashboardScreen(Screen):
             return [{"entity": place.entity_ids[0] if place.entity_ids else "",
                      "room": place.room, "zone": place.zone, "name": place.name}
                     for place in select_places(self.plan, selector)]
+        if repeat.over == "floors":
+            return [{"floor": floor.id, "name": floor.name, "tag": floor.tag,
+                     "level": str(floor.level)}
+                    for floor in select_floors(self.plan, selector)]
+        if repeat.over == "rooms":
+            out = []
+            for floor, room in select_rooms(self.plan, selector):
+                zone = self.plan.zone_of(floor.id, room.id)
+                out.append({"room": room.id, "name": room.name, "zone": zone.id if zone else "",
+                           "floor": floor.id})
+            return out
         return [{"entity": device.entity_id, "room": device.room or "",
                  "name": device.display_label}
                 for device in select_devices(self.plan, selector)]
+
+    def _repeat_entities(self, repeat: Any, scope: dict[str, str]) -> list[dict[str, str]]:
+        """``over: entities`` - a literal id list, or a live backend domain scan.
+
+        Unlike every other ``over:`` value this reads the backend's own
+        snapshot rather than the plan, for entities that are not placed as
+        devices on any floor (docs/adr/0005).
+        """
+        if repeat.entities is not None:
+            return [{"entity": str(_expand(e, scope) or e)} for e in repeat.entities]
+        domain = _expand(repeat.domain, scope) or repeat.domain
+        if not domain:
+            return []
+        backend = self.app.backend
+        ids = sorted(eid for eid in backend.snapshot() if eid.startswith(f"{domain}."))
+        return [{"entity": eid} for eid in ids]
 
     # -- events and drawing ----------------------------------------------
     def handle(self, event: pygame.event.Event, ctx: UIContext) -> bool:

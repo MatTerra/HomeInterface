@@ -86,6 +86,10 @@ an author can ask for.
 rows to, when it holds more than it can show. Only a container at least two
 rows tall can carry one.
 
+**Focus** — the floor plan's second stage: one room or zone drawn alone and
+filling the rectangle, its devices and inspector reachable, in place of the
+whole storey the overview stage draws.
+
 ## Dashboard vocabulary
 
 **Node** — one entry in a dashboard's tree. Either a container, which holds
@@ -101,11 +105,18 @@ its component's own binding, or names another entity outright when the
 component has no binding of its own to read. It looks nothing up but
 properties: no arithmetic, no filters, no calls.
 
-**Repeat** — generating one child per match, from a selector over the plan and
-a child shape to stamp out.
+**Repeat** — generating one child per match, from a selector and a child shape
+to stamp out. Most selectors describe a slice of the plan (by room, zone,
+floor or kind); one instead describes a slice of the backend's own entity
+list, by domain, for entities the plan does not place anywhere.
 
 **Selector** — a description of which places or entities something applies to,
 by room, zone, floor or kind, rather than by listing entity ids.
+
+**Param** — a named value carried by a pane, set when a `goto` navigates to
+it. A component's selectors and placeholders may read it. Most params are set
+once, at entry, and hold for the pane's lifetime; a tap can also update one in
+place, so a sibling component beside the one that changed it re-reads live.
 
 **Condition** — a single predicate deciding whether a node is shown.
 
